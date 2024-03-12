@@ -1,7 +1,5 @@
 
-# Worker
+# Insight Worker
 
-Take PDF files and turns them into usable documents. Then ingests these
-documents into database and search-index.
-
-
+Worker service for [Insight](https://github.com/followthemoney/insight/).
+Handles various tasks like indexing, embedding and answering prompts.
