@@ -1,6 +1,9 @@
 
-run:
-	set -a; source ./.env; set +a; poetry run insight-worker process-messages
+run-ingest:
+	set -a; source ./.env; set +a; QUEUE=ingest poetry run insight-worker process-messages
+
+run-worker:
+	set -a; source ./.env; set +a; QUEUE=default poetry run insight-worker process-messages
 
 test:
 	poetry run pytest

@@ -11,8 +11,8 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from pikepdf import Pdf
 from itertools import chain
-from sqlalchemy import create_engine, select, text, delete
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, select, text, delete, func
+from sqlalchemy.orm import Session, load_only
 from .models import Files, Documents, Prompts, Sources, Pages
 from .opensearch import opensearch_headers
 from .rag import embed, complete
@@ -125,20 +125,15 @@ def ingest_document(id, channel):
 
         # TODO - https://github.com/followthemoney/insight/issues/55
 
-        # Get all contents, sorted by position on page
-        contents = [page.get_text(sort=True) for page in document_pdf]
-        # Get the embeddings for those contents
-        embeddings = embed(contents)
-
         pages = [
             Pages(
-                contents=contents,
+                # Get all contents, sorted by position on page
+                contents=page.get_text(sort=True).strip(),
                 # Index pages in file instead of in document
                 index=document.from_page + index,
-                embedding=embedding,
                 file_id=document.file.id,
             )
-            for index, (contents, embedding) in enumerate(zip(contents, embeddings))
+            for index, page in enumerate(document_pdf)
         ]
         session.add_all(pages)
         document.status = "indexing"
@@ -157,22 +152,24 @@ def ingest_document(id, channel):
         )
 
 
+def get_pages(session, document):
+    stmt = (
+        select(Pages)
+        .where(Pages.index >= document.from_page)
+        .where(Pages.index < document.to_page)
+        .where(Pages.contents != None)
+        .where(Pages.file_id == document.file_id)
+    )
+    return session.scalars(stmt).all()
+
+
 def index_document(id, channel):
     logging.info(f"Indexing document {id}")
 
     with Session(engine) as session:
-        stmt = select(Documents).join(Documents.file).where(Documents.id == id)
+        stmt = select(Documents).where(Documents.id == id)
         document = session.scalars(stmt).one()
-
-        # TODO - We can get these as part of the above documents query instead of 2
-        stmt = (
-            select(Pages.contents, Pages.index)
-            .where(Pages.file_id == document.file.id)
-            .where(Pages.index >= document.from_page)
-            .where(Pages.index < document.to_page)
-            .order_by(Pages.index.asc())
-        )
-        pages = session.execute(stmt).all()
+        pages = get_pages(session, document)
 
         # Index files pages as document pages
         res = httpx.put(
@@ -180,27 +177,53 @@ def index_document(id, channel):
             headers=opensearch_headers,
             json={
                 "filename": document.name,
-                "file_id": str(document.file.id),
+                "file_id": str(document.file_id),
                 "pages": [
                     {
                         "document_id": str(document.id),
-                        "index": index - document.from_page,
-                        "contents": contents,
+                        "index": page.index - document.from_page,
+                        "contents": page.contents,
                     }
-                    for (contents, index) in pages
+                    for page in pages
                 ],
             },
         )
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
-        document.status = None
+        document.status = "embedding"
         session.commit()
 
         # Notify user of our answer
         channel.basic_publish(
+            exchange="insight",
+            routing_key="embed_document",
+            body=json.dumps({"id": str(document.id)}),
+        )
+        channel.basic_publish(
             exchange=f"user-{document.file.owner_id}",
             routing_key="index_document",
+            body=json.dumps({"id": str(document.id)}),
+        )
+
+
+def embed_document(id, channel):
+    with Session(engine) as session:
+        stmt = select(Documents).where(Documents.id == id)
+        document = session.scalars(stmt).one()
+        pages = get_pages(session, document)
+
+        embeddings = embed([page.contents for page in pages])
+
+        for embedding, page in zip(embeddings, pages):
+            page.embedding = embedding
+
+        document.status = None
+        session.commit()
+
+        channel.basic_publish(
+            exchange=f"user-{document.file.owner_id}",
+            routing_key="embed_document",
             body=json.dumps({"id": str(document.id)}),
         )
 

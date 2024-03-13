@@ -9,6 +9,7 @@ from .tasks import (
     analyze_file,
     ingest_document,
     index_document,
+    embed_document,
     delete_file,
     delete_document,
     answer_prompt,
@@ -51,6 +52,8 @@ def on_message(channel, method_frame, header_frame, body):
             ingest_document(data["id"], channel)
         case "index_document":
             index_document(data["id"], channel)
+        case "embed_document":
+            embed_document(data["id"], channel)
         case "answer_prompt":
             answer_prompt(data["id"], channel)
         case "delete_file":

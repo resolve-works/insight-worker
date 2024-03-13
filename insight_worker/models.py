@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, Double, Enum, ForeignKeyConstraint, Integer, PrimaryKeyConstraint, Text, Uuid, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Double, Enum, ForeignKeyConstraint, Integer, PrimaryKeyConstraint, Text, Uuid, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
 import uuid
@@ -21,8 +21,10 @@ class Files(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     path: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Enum('uploading', 'analyzing', 'idle', name='file_status'), server_default=text("'uploading'::file_status"))
+    is_uploaded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     number_of_pages: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[Optional[str]] = mapped_column(Enum('analyzing', name='file_status'), server_default=text("'analyzing'::file_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
@@ -41,12 +43,23 @@ class Prompts(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     query: Mapped[str] = mapped_column(Text)
     similarity_top_k: Mapped[int] = mapped_column(Integer, server_default=text('3'))
-    status: Mapped[str] = mapped_column(Enum('answering', 'idle', name='prompt_status'), server_default=text("'answering'::prompt_status"))
     response: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[Optional[str]] = mapped_column(Enum('answering', name='prompt_status'), server_default=text("'answering'::prompt_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
     sources: Mapped[List['Sources']] = relationship('Sources', back_populates='prompt')
+
+
+class SchemaMigrations(Base):
+    __tablename__ = 'schema_migrations'
+    __table_args__ = (
+        PrimaryKeyConstraint('version', name='schema_migrations_pkey'),
+        {'schema': 'private'}
+    )
+
+    version: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dirty: Mapped[bool] = mapped_column(Boolean)
 
 
 class Documents(Base):
@@ -62,8 +75,9 @@ class Documents(Base):
     path: Mapped[str] = mapped_column(Text)
     from_page: Mapped[int] = mapped_column(Integer)
     to_page: Mapped[int] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(Enum('ingesting', 'indexing', 'idle', name='document_status'), server_default=text("'ingesting'::document_status"))
+    is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     name: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[Optional[str]] = mapped_column(Enum('ingesting', 'indexing', 'embedding', name='document_status'), server_default=text("'ingesting'::document_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
