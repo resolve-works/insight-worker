@@ -24,8 +24,10 @@ engine = create_engine(env.get("POSTGRES_URI"))
 
 
 def get_minio():
+    url = urlparse(env.get("STORAGE_ENDPOINT"))
     return Minio(
-        urlparse(env.get("STORAGE_ENDPOINT")).netloc,
+        url.netloc,
+        secure=url.scheme == "https",
         access_key=env.get("STORAGE_ACCESS_KEY"),
         secret_key=env.get("STORAGE_SECRET_KEY"),
         region="insight",
