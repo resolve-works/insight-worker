@@ -84,10 +84,13 @@ def cli():
 def process_messages():
     create_mapping()
 
-    context = ssl.create_default_context()
+    ssl_options = None
+    if env.get("RABBITMQ_SSL").lower() == "true":
+        context = ssl.create_default_context()
+        ssl_options = SSLOptions(context)
 
     parameters = ConnectionParameters(
-        ssl_options=SSLOptions(context),
+        ssl_options=ssl_options,
         host=env.get("RABBITMQ_HOST"),
         credentials=PlainCredentials(
             env.get("RABBITMQ_USER"), env.get("RABBITMQ_PASSWORD")
