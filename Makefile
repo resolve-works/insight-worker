@@ -1,4 +1,7 @@
 
+run:
+	set -a; source ./.env; set +a; poetry run insight-worker process-messages
+
 test:
 	poetry run pytest
 
