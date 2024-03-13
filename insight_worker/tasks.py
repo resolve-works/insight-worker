@@ -22,12 +22,14 @@ logging.basicConfig(level=logging.INFO)
 
 engine = create_engine(env.get("POSTGRES_URI"))
 
-minio = Minio(
-    urlparse(env.get("STORAGE_ENDPOINT")).netloc,
-    access_key=env.get("STORAGE_ACCESS_KEY"),
-    secret_key=env.get("STORAGE_SECRET_KEY"),
-    region="insight",
-)
+
+def get_minio():
+    return Minio(
+        urlparse(env.get("STORAGE_ENDPOINT")).netloc,
+        access_key=env.get("STORAGE_ACCESS_KEY"),
+        secret_key=env.get("STORAGE_SECRET_KEY"),
+        region="insight",
+    )
 
 
 def ocrmypdf_process(input_file, output_file):
@@ -50,6 +52,7 @@ def ocrmypdf_process(input_file, output_file):
 
 def analyze_file(id, channel):
     logging.info(f"Analyzing file {id}")
+    minio = get_minio()
 
     with Session(engine) as session:
         stmt = select(Files).where(Files.id == id)
@@ -84,6 +87,7 @@ def analyze_file(id, channel):
 
 def ingest_document(id, channel):
     logging.info(f"Ingesting document {id}")
+    minio = get_minio()
 
     temp_path = Path(TemporaryDirectory().name)
     file_path = temp_path / "file.pdf"
@@ -201,6 +205,7 @@ def index_document(id, channel):
 
 def delete_file(id, channel):
     logging.info(f"Deleting file {id}")
+    minio = get_minio()
 
     with Session(engine) as session:
         stmt = select(Files.path).where(Files.id == id)
@@ -227,6 +232,7 @@ def delete_file(id, channel):
 
 def delete_document(id, channel):
     logging.info(f"Deleting document {id}")
+    minio = get_minio()
 
     with Session(engine) as session:
         stmt = select(Documents.path).where(Documents.id == id)
