@@ -13,7 +13,7 @@ from .tasks import (
     delete_document,
     answer_prompt,
 )
-from .opensearch import opensearch_headers, opensearch_endpoint
+from .opensearch import opensearch_headers
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,7 +23,7 @@ def create_mapping():
     logging.info("Creating index")
 
     res = httpx.put(
-        f"{opensearch_endpoint}/documents",
+        f"{env.get('OPENSEARCH_ENDPOINT')}/documents",
         json={"mappings": {"properties": {"pages": {"type": "nested"}}}},
         headers=opensearch_headers,
     )

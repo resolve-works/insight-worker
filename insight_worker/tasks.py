@@ -14,7 +14,7 @@ from itertools import chain
 from sqlalchemy import create_engine, select, text, delete
 from sqlalchemy.orm import Session
 from .models import Files, Documents, Prompts, Sources, Pages
-from .opensearch import opensearch_headers, opensearch_endpoint
+from .opensearch import opensearch_headers
 from .rag import embed, complete
 
 
@@ -170,7 +170,7 @@ def index_document(id, channel):
 
         # Index files pages as document pages
         res = httpx.put(
-            f"{opensearch_endpoint}/documents/_doc/{str(document.id)}",
+            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_doc/{str(document.id)}",
             headers=opensearch_headers,
             json={
                 "filename": document.name,
@@ -213,7 +213,7 @@ def delete_file(id, channel):
 
         # Remove indexed contents of documents
         res = httpx.post(
-            f"{opensearch_endpoint}/documents/_delete_by_query",
+            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_delete_by_query",
             headers=opensearch_headers,
             json={"query": {"match": {"file_id": id}}},
         )
@@ -237,7 +237,7 @@ def delete_document(id, channel):
 
         # Remove indexed contents
         res = httpx.delete(
-            f"{opensearch_endpoint}/documents/_doc/{id}",
+            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_doc/{id}",
             headers=opensearch_headers,
         )
         if res.status_code != 200:
