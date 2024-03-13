@@ -64,7 +64,7 @@ def on_message(channel, method_frame, header_frame, body):
 
 
 def on_channel_open(channel):
-    channel.basic_consume("worker", on_message)
+    channel.basic_consume(env.get("QUEUE"), on_message)
 
 
 def on_open(connection):
