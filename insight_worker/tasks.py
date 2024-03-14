@@ -30,7 +30,7 @@ def get_minio():
         secure=url.scheme == "https",
         access_key=env.get("STORAGE_ACCESS_KEY"),
         secret_key=env.get("STORAGE_SECRET_KEY"),
-        region="insight",
+        region=env.get("STORAGE_REGION"),
     )
 
 
