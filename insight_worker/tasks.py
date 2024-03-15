@@ -157,7 +157,7 @@ def get_pages(session, document):
         select(Pages)
         .where(Pages.index >= document.from_page)
         .where(Pages.index < document.to_page)
-        .where(Pages.contents != None)
+        .where(func.length(Pages.contents) > 0)
         .where(Pages.file_id == document.file_id)
     )
     return session.scalars(stmt).all()

@@ -6,7 +6,7 @@ authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.12"
+python = ">=3.10.12,<3.12"
 click = "^8.1.7"
 pikepdf = "^8.6.0"
 ocrmypdf = "^16.0.0"
