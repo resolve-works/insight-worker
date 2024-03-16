@@ -8,5 +8,6 @@ RUN pip install .
 RUN rm -rf /home/insight
 
 WORKDIR /home
+ENTRYPOINT []
 CMD insight-worker process-messages
 
