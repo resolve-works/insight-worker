@@ -1,7 +1,6 @@
 import logging
 import ocrmypdf
 import fitz
-import httpx
 import json
 from minio import Minio
 from os import environ as env
@@ -12,9 +11,9 @@ from pathlib import Path
 from pikepdf import Pdf
 from itertools import chain
 from sqlalchemy import create_engine, select, text, delete, func
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session
 from .models import Files, Documents, Prompts, Sources, Pages
-from .opensearch import opensearch_headers
+from .opensearch import opensearch_request
 from .rag import embed, complete
 
 
@@ -172,22 +171,20 @@ def index_document(id, channel):
         pages = get_pages(session, document)
 
         # Index files pages as document pages
-        res = httpx.put(
-            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_doc/{str(document.id)}",
-            headers=opensearch_headers,
-            json={
-                "filename": document.name,
-                "file_id": str(document.file_id),
-                "pages": [
-                    {
-                        "document_id": str(document.id),
-                        "index": page.index - document.from_page,
-                        "contents": page.contents,
-                    }
-                    for page in pages
-                ],
-            },
-        )
+        data = {
+            "filename": document.name,
+            "file_id": str(document.file_id),
+            "pages": [
+                {
+                    "document_id": str(document.id),
+                    "index": page.index - document.from_page,
+                    "contents": page.contents,
+                }
+                for page in pages
+            ],
+        }
+
+        res = opensearch_request("put", f"/documents/_doc/{str(document.id)}", data)
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
@@ -242,11 +239,8 @@ def delete_file(id, channel):
         minio.remove_object(env.get("STORAGE_BUCKET"), str(Path(path).parent))
 
         # Remove indexed contents of documents
-        res = httpx.post(
-            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_delete_by_query",
-            headers=opensearch_headers,
-            json={"query": {"match": {"file_id": id}}},
-        )
+        data = {"query": {"match": {"file_id": id}}}
+        res = opensearch_request("post", "/documents/_delete_by_query", data)
         if res.status_code != 200:
             raise Exception(res.text)
 
@@ -267,10 +261,7 @@ def delete_document(id, channel):
         minio.remove_object(env.get("STORAGE_BUCKET"), path)
 
         # Remove indexed contents
-        res = httpx.delete(
-            f"{env.get('OPENSEARCH_ENDPOINT')}/documents/_doc/{id}",
-            headers=opensearch_headers,
-        )
+        res = opensearch_request("delete", f"/documents/_doc/{id}")
         if res.status_code != 200:
             raise Exception(res.text)
 

@@ -1,7 +1,6 @@
 import click
 import logging
 import json
-import httpx
 import ssl
 from os import environ as env
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
@@ -14,7 +13,7 @@ from .tasks import (
     delete_document,
     answer_prompt,
 )
-from .opensearch import opensearch_headers
+from .opensearch import opensearch_request
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,11 +22,8 @@ logging.basicConfig(level=logging.INFO)
 def create_mapping():
     logging.info("Creating index")
 
-    res = httpx.put(
-        f"{env.get('OPENSEARCH_ENDPOINT')}/documents",
-        json={"mappings": {"properties": {"pages": {"type": "nested"}}}},
-        headers=opensearch_headers,
-    )
+    json = {"mappings": {"properties": {"pages": {"type": "nested"}}}}
+    res = opensearch_request("put", "/documents", json)
 
     if res.status_code == 200:
         logging.info("Index created succesfully")
