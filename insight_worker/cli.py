@@ -14,6 +14,7 @@ from .tasks import (
     answer_prompt,
 )
 from .opensearch import opensearch_request
+from sqlalchemy.exc import NoResultFound
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,25 +42,29 @@ def create_mapping():
 def on_message(channel, method_frame, header_frame, body):
     data = json.loads(body)
 
-    match method_frame.routing_key:
-        case "analyze_file":
-            analyze_file(data["id"], channel)
-        case "ingest_document":
-            ingest_document(data["id"], channel)
-        case "index_document":
-            index_document(data["id"], channel)
-        case "embed_document":
-            embed_document(data["id"], channel)
-        case "answer_prompt":
-            answer_prompt(data["id"], channel)
-        case "delete_file":
-            delete_file(data["id"], channel)
-        case "delete_document":
-            delete_document(data["id"], channel)
-        case _:
-            raise Exception(f"Unknown routing key: {method_frame.routing_key}")
+    try:
+        match method_frame.routing_key:
+            case "analyze_file":
+                analyze_file(data["id"], channel)
+            case "ingest_document":
+                ingest_document(data["id"], channel)
+            case "index_document":
+                index_document(data["id"], channel)
+            case "embed_document":
+                embed_document(data["id"], channel)
+            case "answer_prompt":
+                answer_prompt(data["id"], channel)
+            case "delete_file":
+                delete_file(data["id"], channel)
+            case "delete_document":
+                delete_document(data["id"], channel)
+            case _:
+                raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
-    channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+        channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+    except Exception as e:
+        logging.error("Could not process message", exc_info=e)
+        channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=False)
 
 
 def on_channel_open(channel):

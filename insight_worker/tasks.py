@@ -80,9 +80,9 @@ def analyze_file(id, channel):
             body=json.dumps({"id": str(document.id)}),
         )
         channel.basic_publish(
-            exchange=f"user-{file.owner_id}",
-            routing_key="analyze_file",
-            body=json.dumps({"id": str(file.id)}),
+            exchange="",
+            routing_key=f"user-{file.owner_id}",
+            body=json.dumps({"id": str(file.id), "task": "analyze_file"}),
         )
 
 
@@ -145,9 +145,9 @@ def ingest_document(id, channel):
             body=json.dumps({"id": str(document.id)}),
         )
         channel.basic_publish(
-            exchange=f"user-{document.file.owner_id}",
-            routing_key="ingest_document",
-            body=json.dumps({"id": str(document.id)}),
+            exchange="",
+            routing_key=f"user-{document.file.owner_id}",
+            body=json.dumps({"id": str(document.id), "task": "ingest_document"}),
         )
 
 
@@ -198,9 +198,9 @@ def index_document(id, channel):
             body=json.dumps({"id": str(document.id)}),
         )
         channel.basic_publish(
-            exchange=f"user-{document.file.owner_id}",
-            routing_key="index_document",
-            body=json.dumps({"id": str(document.id)}),
+            exchange="",
+            routing_key=f"user-{document.file.owner_id}",
+            body=json.dumps({"id": str(document.id), "task": "index_document"}),
         )
 
 
@@ -219,9 +219,9 @@ def embed_document(id, channel):
         session.commit()
 
         channel.basic_publish(
-            exchange=f"user-{document.file.owner_id}",
-            routing_key="embed_document",
-            body=json.dumps({"id": str(document.id)}),
+            exchange="",
+            routing_key=f"user-{document.file.owner_id}",
+            body=json.dumps({"id": str(document.id), "task": "embed_document"}),
         )
 
 
@@ -306,7 +306,7 @@ def answer_prompt(id, channel):
         session.commit()
 
         channel.basic_publish(
-            exchange=f"user-{prompt.owner_id}",
-            routing_key="answer_prompt",
-            body=json.dumps({"id": str(prompt.id)}),
+            exchange="",
+            routing_key=f"user-{prompt.owner_id}",
+            body=json.dumps({"id": str(prompt.id), "task": "answer_prompt"}),
         )
