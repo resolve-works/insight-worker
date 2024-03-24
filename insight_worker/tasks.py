@@ -295,6 +295,8 @@ def answer_prompt(id, channel):
                 Pages.contents,
             )
             .order_by(text("distance asc"))
+            .join(Pages.file)
+            .where(Files.owner_id == prompt.owner_id)
             .limit(prompt.similarity_top_k)
         )
 
