@@ -155,7 +155,7 @@ def index_document(id, channel):
     logging.info(f"Indexing document {id}")
 
     with Session(engine) as session:
-        stmt = select(Documents).where(Documents.id == id)
+        stmt = select(Documents).join(Documents.file).where(Documents.id == id)
         document = session.scalars(stmt).one()
         stmt = (
             select(Pages)
@@ -169,6 +169,9 @@ def index_document(id, channel):
         # Index files pages as document pages
         data = {
             "filename": document.name,
+            "readable_by": [
+                str(document.file.owner_id),
+            ],
             "file_id": str(document.file_id),
             "pages": [
                 {
