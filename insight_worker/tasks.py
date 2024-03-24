@@ -151,24 +151,20 @@ def ingest_document(id, channel):
         )
 
 
-def get_pages(session, document):
-    stmt = (
-        select(Pages)
-        .where(Pages.index >= document.from_page)
-        .where(Pages.index < document.to_page)
-        .where(func.length(Pages.contents) > 0)
-        .where(Pages.file_id == document.file_id)
-    )
-    return session.scalars(stmt).all()
-
-
 def index_document(id, channel):
     logging.info(f"Indexing document {id}")
 
     with Session(engine) as session:
         stmt = select(Documents).where(Documents.id == id)
         document = session.scalars(stmt).one()
-        pages = get_pages(session, document)
+        stmt = (
+            select(Pages)
+            .where(Pages.index >= document.from_page)
+            .where(Pages.index < document.to_page)
+            .where(func.length(Pages.contents) > 0)
+            .where(Pages.file_id == document.file_id)
+        )
+        pages = session.scalars(stmt).all()
 
         # Index files pages as document pages
         data = {
@@ -208,7 +204,15 @@ def embed_document(id, channel):
     with Session(engine) as session:
         stmt = select(Documents).where(Documents.id == id)
         document = session.scalars(stmt).one()
-        pages = get_pages(session, document)
+        stmt = (
+            select(Pages)
+            .where(Pages.index >= document.from_page)
+            .where(Pages.index < document.to_page)
+            .where(func.length(Pages.contents) > 0)
+            .where(Pages.embedding is None)
+            .where(Pages.file_id == document.file_id)
+        )
+        pages = session.scalars(stmt).all()
 
         embeddings = embed([page.contents for page in pages])
 
