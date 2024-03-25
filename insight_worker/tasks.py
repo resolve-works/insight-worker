@@ -3,6 +3,7 @@ import ocrmypdf
 import fitz
 import json
 from minio import Minio
+from minio.deleteobjects import DeleteObject
 from os import environ as env
 from urllib.parse import urlparse
 from multiprocessing import Process
@@ -238,12 +239,16 @@ def delete_file(id, channel):
 
     with Session(engine) as session:
         stmt = select(Files.path).where(Files.id == id)
-        path = session.scalars(stmt).one()
+        file_path = session.scalars(stmt).one()
 
-        # Remove file from object storage
-        minio.remove_object(env.get("STORAGE_BUCKET"), path)
-        # Remove directory containing all documents
-        minio.remove_object(env.get("STORAGE_BUCKET"), str(Path(path).parent))
+        stmt = select(Documents.path).where(Documents.file_id == id)
+        document_paths = session.scalars(stmt).all()
+        paths = [file_path] + document_paths
+
+        delete_objects = map(lambda path: DeleteObject(path), paths)
+        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
+        for error in errors:
+            logging.error("error occurred when deleting object", error)
 
         # Remove indexed contents of documents
         data = {"query": {"match": {"file_id": id}}}
