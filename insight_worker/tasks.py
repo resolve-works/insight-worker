@@ -38,6 +38,7 @@ def ocrmypdf_process(input_file, output_file):
     ocrmypdf.ocr(
         input_file,
         output_file,
+        output_type="pdf",
         language="nld",
         color_conversion_strategy="RGB",
         progress_bar=False,
@@ -49,6 +50,8 @@ def ocrmypdf_process(input_file, output_file):
         # TODO - Enable user to force OCR
         skip_text=True,
         # plugins=["insight_worker.plugin"],
+        # Aggressive optimization
+        optimize=3,
     )
 
 
