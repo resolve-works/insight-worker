@@ -50,8 +50,8 @@ def ocrmypdf_process(input_file, output_file):
         # TODO - Enable user to force OCR
         skip_text=True,
         # plugins=["insight_worker.plugin"],
-        # Aggressive optimization
-        optimize=3,
+        # Lossless optimization
+        optimize=2,
     )
 
 
@@ -208,6 +208,8 @@ def index_document(id, channel):
 
 
 def embed_document(id, channel):
+    logging.info(f"Embedding document {id}")
+
     with Session(engine) as session:
         stmt = select(Documents).where(Documents.id == id)
         document = session.scalars(stmt).one()
@@ -215,12 +217,11 @@ def embed_document(id, channel):
             select(Pages)
             .where(Pages.index >= document.from_page)
             .where(Pages.index < document.to_page)
+            .where(Pages.embedding == None)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.embedding is None)
             .where(Pages.file_id == document.file_id)
         )
         pages = session.scalars(stmt).all()
-
         embeddings = embed([page.contents for page in pages])
 
         for embedding, page in zip(embeddings, pages):
@@ -305,6 +306,7 @@ def answer_prompt(id, channel):
             .order_by(text("distance asc"))
             .join(Pages.file)
             .where(Files.owner_id == prompt.owner_id)
+            .where(Pages.embedding != None)
             .limit(prompt.similarity_top_k)
         )
 
