@@ -75,7 +75,6 @@ def analyze_file(id, channel):
             to_page=file.number_of_pages,
         )
         file.documents.append(document)
-        file.status = None
         session.commit()
 
         channel.basic_publish(
@@ -139,7 +138,7 @@ def ingest_document(id, channel):
             for index, page in enumerate(document_pdf)
         ]
         session.add_all(pages)
-        document.status = "indexing"
+        document.is_ingested = True
         session.commit()
 
         # Trigger indexing
@@ -191,7 +190,7 @@ def index_document(id, channel):
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
-        document.status = "embedding"
+        document.is_indexed = True
         session.commit()
 
         # Notify user of our answer
@@ -227,7 +226,7 @@ def embed_document(id, channel):
         for embedding, page in zip(embeddings, pages):
             page.embedding = embedding
 
-        document.status = None
+        document.is_embedded = True
         session.commit()
 
         channel.basic_publish(

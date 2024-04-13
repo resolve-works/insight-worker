@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, DateTime, Double, Enum, ForeignKeyConstraint, Integer, PrimaryKeyConstraint, Text, Uuid, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Double, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, Uuid, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
 import uuid
@@ -24,7 +24,6 @@ class Files(Base):
     is_uploaded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     number_of_pages: Mapped[Optional[int]] = mapped_column(Integer)
-    status: Mapped[Optional[str]] = mapped_column(Enum('analyzing', name='file_status'), server_default=text("'analyzing'::file_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
@@ -39,12 +38,11 @@ class Prompts(Base):
         {'schema': 'private'}
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     query: Mapped[str] = mapped_column(Text)
     similarity_top_k: Mapped[int] = mapped_column(Integer, server_default=text('3'))
     response: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[Optional[str]] = mapped_column(Enum('answering', name='prompt_status'), server_default=text("'answering'::prompt_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
@@ -76,8 +74,10 @@ class Documents(Base):
     from_page: Mapped[int] = mapped_column(Integer)
     to_page: Mapped[int] = mapped_column(Integer)
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_indexed: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     name: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[Optional[str]] = mapped_column(Enum('ingesting', 'indexing', 'embedding', name='document_status'), server_default=text("'ingesting'::document_status"))
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
@@ -92,7 +92,7 @@ class Pages(Base):
         {'schema': 'private'}
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
     file_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     index: Mapped[int] = mapped_column(Integer)
     contents: Mapped[str] = mapped_column(Text)
@@ -111,7 +111,7 @@ class Sources(Base):
         {'schema': 'private'}
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
     prompt_id: Mapped[int] = mapped_column(BigInteger)
     page_id: Mapped[int] = mapped_column(BigInteger)
     similarity: Mapped[float] = mapped_column(Double(53))
