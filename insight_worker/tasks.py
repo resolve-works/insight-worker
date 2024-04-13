@@ -141,12 +141,14 @@ def ingest_document(id, channel):
         document.is_ingested = True
         session.commit()
 
-        # Trigger indexing
-        channel.basic_publish(
-            exchange="insight",
-            routing_key="index_document",
-            body=json.dumps({"id": str(document.id)}),
-        )
+        # Trigger next tasks
+        for routing_key in ["index_document", "embed_document"]:
+            channel.basic_publish(
+                exchange="insight",
+                routing_key=routing_key,
+                body=json.dumps({"id": str(document.id)}),
+            )
+        # Let user know
         channel.basic_publish(
             exchange="",
             routing_key=f"user-{document.file.owner_id}",
@@ -193,12 +195,6 @@ def index_document(id, channel):
         document.is_indexed = True
         session.commit()
 
-        # Notify user of our answer
-        channel.basic_publish(
-            exchange="insight",
-            routing_key="embed_document",
-            body=json.dumps({"id": str(document.id)}),
-        )
         channel.basic_publish(
             exchange="",
             routing_key=f"user-{document.file.owner_id}",
