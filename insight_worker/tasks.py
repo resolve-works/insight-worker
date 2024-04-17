@@ -122,10 +122,16 @@ def ingest_document(id, channel):
 
         minio.fput_object(env.get("STORAGE_BUCKET"), document.path, ocr_path)
 
+        stmt = (
+            select(Pages.index)
+            .where(Pages.file_id == document.file_id)
+            .where(Pages.index >= document.from_page)
+            .where(Pages.index < document.to_page)
+        )
+        existing_pages = session.scalars(stmt).all()
+
         # fitz is pyMuPDF used for extracting text layers
         document_pdf = fitz.open(ocr_path)
-
-        # TODO - https://github.com/followthemoney/insight/issues/55
 
         pages = [
             Pages(
@@ -136,6 +142,8 @@ def ingest_document(id, channel):
                 file_id=document.file.id,
             )
             for index, page in enumerate(document_pdf)
+            # Don't re-create page models on re-ingest
+            if index + document.from_page not in existing_pages
         ]
         session.add_all(pages)
         document.is_ingested = True
