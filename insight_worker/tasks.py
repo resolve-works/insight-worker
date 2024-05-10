@@ -30,7 +30,8 @@ def get_minio():
         secure=url.scheme == "https",
         access_key=env.get("STORAGE_ACCESS_KEY"),
         secret_key=env.get("STORAGE_SECRET_KEY"),
-        region=env.get("STORAGE_REGION"),
+        # Supplying random region to minio will allow us to not have to set GetBucketLocation
+        region=env.get("STORAGE_REGION", "insight"),
     )
 
 
@@ -64,6 +65,7 @@ def analyze_file(id, channel):
         file = session.scalars(stmt).one()
 
         file_path = Path(TemporaryDirectory().name) / "file.pdf"
+
         minio.fget_object(env.get("STORAGE_BUCKET"), file.path, file_path)
 
         with Pdf.open(file_path) as pdf:
