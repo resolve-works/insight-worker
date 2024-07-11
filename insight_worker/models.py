@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, DateTime, Double, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, Uuid, text
+from sqlalchemy import BigInteger, Boolean, Computed, DateTime, Double, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, Uuid, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
 import uuid
@@ -19,15 +19,15 @@ class Files(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
-    path: Mapped[str] = mapped_column(Text)
-    name: Mapped[str] = mapped_column(Text)
     is_uploaded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    number_of_pages: Mapped[Optional[int]] = mapped_column(Integer)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_indexed: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    from_page: Mapped[int] = mapped_column(Integer, server_default=text('0'))
+    is_ready: Mapped[Optional[bool]] = mapped_column(Boolean, Computed('(is_uploaded AND is_ingested AND is_indexed AND is_embedded)', persisted=True))
+    to_page: Mapped[Optional[int]] = mapped_column(Integer)
 
-    documents: Mapped[List['Documents']] = relationship('Documents', back_populates='file')
+    inodes: Mapped[List['Inodes']] = relationship('Inodes', back_populates='file')
     pages: Mapped[List['Pages']] = relationship('Pages', back_populates='file')
 
 
@@ -60,28 +60,27 @@ class SchemaMigrations(Base):
     dirty: Mapped[bool] = mapped_column(Boolean)
 
 
-class Documents(Base):
-    __tablename__ = 'documents'
+class Inodes(Base):
+    __tablename__ = 'inodes'
     __table_args__ = (
-        ForeignKeyConstraint(['file_id'], ['private.files.id'], ondelete='CASCADE', name='documents_file_id_fkey'),
-        PrimaryKeyConstraint('id', name='documents_pkey'),
+        ForeignKeyConstraint(['file_id'], ['private.files.id'], ondelete='CASCADE', name='inodes_file_id_fkey'),
+        ForeignKeyConstraint(['parent_id'], ['private.inodes.id'], ondelete='CASCADE', name='inodes_parent_id_fkey'),
+        PrimaryKeyConstraint('id', name='inodes_pkey'),
         {'schema': 'private'}
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
-    file_id: Mapped[uuid.UUID] = mapped_column(Uuid)
-    path: Mapped[str] = mapped_column(Text)
-    from_page: Mapped[int] = mapped_column(Integer)
-    to_page: Mapped[int] = mapped_column(Integer)
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    name: Mapped[str] = mapped_column(Text)
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_indexed: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    name: Mapped[Optional[str]] = mapped_column(Text)
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    file_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
 
-    file: Mapped['Files'] = relationship('Files', back_populates='documents')
+    file: Mapped['Files'] = relationship('Files', back_populates='inodes')
+    parent: Mapped['Inodes'] = relationship('Inodes', remote_side=[id], back_populates='parent_reverse')
+    parent_reverse: Mapped[List['Inodes']] = relationship('Inodes', remote_side=[parent_id], back_populates='parent')
 
 
 class Pages(Base):

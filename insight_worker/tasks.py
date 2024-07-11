@@ -13,7 +13,7 @@ from pikepdf import Pdf
 from itertools import chain
 from sqlalchemy import create_engine, select, text, delete, func
 from sqlalchemy.orm import Session
-from .models import Files, Documents, Prompts, Sources, Pages
+from .models import Files, Prompts, Sources, Pages, Inodes
 from .opensearch import opensearch_request
 from .rag import embed, complete
 
@@ -56,175 +56,138 @@ def ocrmypdf_process(input_file, output_file):
     )
 
 
-def analyze_file(id, channel):
-    logging.info(f"Analyzing file {id}")
-    minio = get_minio()
-
-    with Session(engine) as session:
-        stmt = select(Files).where(Files.id == id)
-        file = session.scalars(stmt).one()
-
-        file_path = Path(TemporaryDirectory().name) / "file.pdf"
-
-        minio.fget_object(env.get("STORAGE_BUCKET"), file.path, file_path)
-
-        with Pdf.open(file_path) as pdf:
-            file.number_of_pages = len(pdf.pages)
-
-        document = Documents(
-            name=file.name,
-            from_page=0,
-            to_page=file.number_of_pages,
-        )
-        file.documents.append(document)
-        session.commit()
-
-        channel.basic_publish(
-            exchange="insight",
-            routing_key="ingest_document",
-            body=json.dumps({"id": str(document.id)}),
-        )
-        channel.basic_publish(
-            exchange="",
-            routing_key=f"user-{file.owner_id}",
-            body=json.dumps({"id": str(file.id), "task": "analyze_file"}),
-        )
-
-
-def ingest_document(id, channel):
-    logging.info(f"Ingesting document {id}")
+def ingest_file(id, channel):
+    logging.info(f"Ingesting file {id}")
     minio = get_minio()
 
     temp_path = Path(TemporaryDirectory().name)
-    file_path = temp_path / "file.pdf"
-    split_path = temp_path / "split.pdf"
-    ocr_path = temp_path / "ocr.pdf"
+    original_path = temp_path / "original"
+    optimized_path = temp_path / "optimized"
 
     with Session(engine) as session:
-        stmt = select(Documents).join(Documents.file).where(Documents.id == id)
-        document = session.scalars(stmt).one()
+        stmt = (
+        select(Inodes, func.storage_path(Inodes)) .join(Inodes.file) .where(Inodes.id == id)
+                )
+        inode = session.scalars(stmt).one()
+        path = f"users/{inode.owner_id}/{inode.storage_path}"
 
-        minio.fget_object(env.get("STORAGE_BUCKET"), document.file.path, file_path)
+        minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
-        # Extract Document from file
-        with Pdf.open(file_path) as file_pdf:
-            before_range = range(0, document.from_page)
-            after_range = range(document.to_page, document.file.number_of_pages)
+        # Analyze file, store meta
+        with Pdf.open(original_path) as file_pdf:
+            if not inode.file.to_page:
+                inode.file.to_page = len(file_pdf.pages)
+
+            before_range = range(0, inode.file.from_page)
+            after_range = range(inode.file.to_page, len(file_pdf.pages))
             pages_to_delete = list(chain(before_range, after_range))
-            # Reverse the range to remove last page first as the document shrinks
-            # when removing pages, leading to IndexErrors otherwise
-            for p in reversed(pages_to_delete):
-                del file_pdf.pages[p]
-            file_pdf.save(split_path)
+
+            # Split file from original if there's pages explicitely set
+            if(len(pages_to_delete)):
+                # Reverse the range to remove last page first as the file shrinks
+                # when removing pages, leading to IndexErrors otherwise
+                for p in reversed(pages_to_delete):
+                    del file_pdf.pages[p]
+                file_pdf.save(original_path)
 
         # OCR & optimize new PDF
-        process = Process(target=ocrmypdf_process, args=(split_path, ocr_path))
+        process = Process(target=ocrmypdf_process, args=(original_path, optimized_path))
         process.start()
         process.join()
 
-        minio.fput_object(env.get("STORAGE_BUCKET"), document.path, ocr_path)
-
-        stmt = (
-            select(Pages.index)
-            .where(Pages.file_id == document.file_id)
-            .where(Pages.index >= document.from_page)
-            .where(Pages.index < document.to_page)
-        )
-        existing_pages = session.scalars(stmt).all()
+        minio.fput_object(env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path)
 
         # fitz is pyMuPDF used for extracting text layers
-        document_pdf = fitz.open(ocr_path)
+        file_pdf = fitz.open(optimized_path)
 
         pages = [
             Pages(
                 # Get all contents, sorted by position on page
                 contents=page.get_text(sort=True).strip(),
-                # Index pages in file instead of in document
-                index=document.from_page + index,
-                file_id=document.file.id,
+                # Index pages in file instead of in file
+                index=inode.file.from_page + index,
+                file_id=inode.file_id,
             )
-            for index, page in enumerate(document_pdf)
-            # Don't re-create page models on re-ingest
-            if index + document.from_page not in existing_pages
+            for index, page in enumerate(file_pdf)
         ]
         session.add_all(pages)
-        document.is_ingested = True
+        inode.file.is_ingested = True
         session.commit()
 
         # Trigger next tasks
-        for routing_key in ["index_document", "embed_document"]:
+        for routing_key in ["index_file", "embed_file"]:
             channel.basic_publish(
                 exchange="insight",
                 routing_key=routing_key,
-                body=json.dumps({"id": str(document.id)}),
+                body=json.dumps({"id": str(inode.id)}),
             )
         # Let user know
         channel.basic_publish(
             exchange="",
-            routing_key=f"user-{document.file.owner_id}",
-            body=json.dumps({"id": str(document.id), "task": "ingest_document"}),
+            routing_key=f"user-{inode.owner_id}",
+            body=json.dumps({"id": str(inode.id), "task": "ingest_file"}),
         )
 
 
-def index_document(id, channel):
-    logging.info(f"Indexing document {id}")
+def index_file(id, channel):
+    logging.info(f"Indexing file {id}")
 
     with Session(engine) as session:
-        stmt = select(Documents).join(Documents.file).where(Documents.id == id)
-        document = session.scalars(stmt).one()
+        stmt = (
+                select(Inodes, func.storage_path(Inodes))
+                .join(Inodes.file)
+                .where(Inodes.id == id)
+                )
+        inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
-            .where(Pages.index >= document.from_page)
-            .where(Pages.index < document.to_page)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.file_id == document.file_id)
+            .where(Pages.file_id == inode.file.file_id)
         )
         pages = session.scalars(stmt).all()
 
-        # Index files pages as document pages
+        # Index file with pages
         data = {
-            "filename": document.name,
-            "readable_by": [
-                str(document.file.owner_id),
-            ],
-            "file_id": str(document.file_id),
+            "path": inode.storage_path,
+            "filename": inode.file.name,
+            "owner_id": str(inode.owner_id),
             "pages": [
                 {
-                    "document_id": str(document.id),
-                    "index": page.index - document.from_page,
+                    "file_id": str(inode.id),
+                    "index": page.index - inode.file.from_page,
                     "contents": page.contents,
                 }
                 for page in pages
             ],
         }
 
-        res = opensearch_request("put", f"/documents/_doc/{str(document.id)}", data)
+        res = opensearch_request("put", f"/inodes/_doc/{str(inode.id)}", data)
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
-        document.is_indexed = True
+        inode.file.is_indexed = True
         session.commit()
 
         channel.basic_publish(
             exchange="",
-            routing_key=f"user-{document.file.owner_id}",
-            body=json.dumps({"id": str(document.id), "task": "index_document"}),
+            routing_key=f"user-{inode.owner_id}",
+            body=json.dumps({"id": str(inode.id), "task": "index_file"}),
         )
 
 
-def embed_document(id, channel):
-    logging.info(f"Embedding document {id}")
+def embed_file(id, channel):
+    logging.info(f"Embedding file {id}")
 
     with Session(engine) as session:
-        stmt = select(Documents).where(Documents.id == id)
-        document = session.scalars(stmt).one()
+        stmt = select(Inodes).join(Inodes.file).where(Inodes.id == id)
+        inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
-            .where(Pages.index >= document.from_page)
-            .where(Pages.index < document.to_page)
+            .where(Pages.index >= inode.file.from_page)
+            .where(Pages.index < inode.file.to_page)
             .where(Pages.embedding == None)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.file_id == document.file_id)
+            .where(Pages.file_id == inode.file_id)
         )
         pages = session.scalars(stmt).all()
         embeddings = embed([page.contents for page in pages])
@@ -232,61 +195,57 @@ def embed_document(id, channel):
         for embedding, page in zip(embeddings, pages):
             page.embedding = embedding
 
-        document.is_embedded = True
+        inode.file.is_embedded = True
         session.commit()
 
         channel.basic_publish(
             exchange="",
-            routing_key=f"user-{document.file.owner_id}",
-            body=json.dumps({"id": str(document.id), "task": "embed_document"}),
+            routing_key=f"user-{inode.owner_id}",
+            body=json.dumps({"id": str(inode.id), "task": "embed_file"}),
         )
 
 
-def delete_file(id, channel):
-    logging.info(f"Deleting file {id}")
+def delete_inode(id, channel):
+    logging.info(f"Deleting inode {id}")
     minio = get_minio()
 
     with Session(engine) as session:
-        stmt = select(Files.path).where(Files.id == id)
-        file_path = session.scalars(stmt).one()
+        # Select the paths for the given inode
+        stmt = (
+            select(func.storage_path(Inodes))
+                .where(Inodes.id == id)
+        )
+        path = session.scalars(stmt).one()
+        # Select tho paths of all this inodes descendants
+        stmt = (
+            select(func.storage_path(Inodes))
+                .where(Inodes.id.in_(select(func.descendants(Inodes)).where(Inodes.id == id)))
+        )
+        paths = session.scalars(stmt).all()
 
-        stmt = select(Documents.path).where(Documents.file_id == id)
-        document_paths = session.scalars(stmt).all()
-        paths = [file_path] + document_paths
+        # Make sure all original and optimized files are destroyed
+        paths = paths + [path]
+        paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
+        paths = [path for tuple in paths for path in tuple]
 
         delete_objects = map(lambda path: DeleteObject(path), paths)
         errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
         for error in errors:
             logging.error("error occurred when deleting object", error)
 
-        # Remove indexed contents of documents
-        data = {"query": {"match": {"file_id": id}}}
-        res = opensearch_request("post", "/documents/_delete_by_query", data)
+        # Remove indexed contents of files that descend this inode
+        data = {
+            "query": {
+                "match": {
+                    "path": f"{path}*"
+                }
+            }
+        }
+        res = opensearch_request("post", "/files/_delete_by_query", data)
         if res.status_code != 200:
             raise Exception(res.text)
 
-        stmt = delete(Files).where(Files.id == id)
-        session.execute(stmt)
-        session.commit()
-
-
-def delete_document(id, channel):
-    logging.info(f"Deleting document {id}")
-    minio = get_minio()
-
-    with Session(engine) as session:
-        stmt = select(Documents.path).where(Documents.id == id)
-        path = session.scalars(stmt).one()
-
-        # Remove file from object storage
-        minio.remove_object(env.get("STORAGE_BUCKET"), path)
-
-        # Remove indexed contents
-        res = opensearch_request("delete", f"/documents/_doc/{id}")
-        if res.status_code != 200:
-            raise Exception(res.text)
-
-        stmt = delete(Documents).where(Documents.id == id)
+        stmt = delete(Inodes).where(Inodes.id == id)
         session.execute(stmt)
         session.commit()
 

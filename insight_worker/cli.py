@@ -5,12 +5,10 @@ import ssl
 from os import environ as env
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
 from .tasks import (
-    analyze_file,
-    ingest_document,
-    index_document,
-    embed_document,
-    delete_file,
-    delete_document,
+    ingest_file,
+    index_file,
+    embed_file,
+    delete_inode,
     answer_prompt,
 )
 from .opensearch import opensearch_request
@@ -24,7 +22,7 @@ def create_mapping():
     logging.info("Creating index")
 
     json = {"mappings": {"properties": {"pages": {"type": "nested"}}}}
-    res = opensearch_request("put", "/documents", json)
+    res = opensearch_request("put", "/inodes", json)
 
     if res.status_code == 200:
         logging.info("Index created succesfully")
@@ -44,20 +42,16 @@ def on_message(channel, method_frame, header_frame, body):
 
     try:
         match method_frame.routing_key:
-            case "analyze_file":
-                analyze_file(data["id"], channel)
-            case "ingest_document":
-                ingest_document(data["id"], channel)
-            case "index_document":
-                index_document(data["id"], channel)
-            case "embed_document":
-                embed_document(data["id"], channel)
+            case "ingest_file":
+                ingest_file(data["id"], channel)
+            case "index_file":
+                index_file(data["id"], channel)
+            case "embed_file":
+                embed_file(data["id"], channel)
             case "answer_prompt":
                 answer_prompt(data["id"], channel)
-            case "delete_file":
-                delete_file(data["id"], channel)
-            case "delete_document":
-                delete_document(data["id"], channel)
+            case "delete_inode":
+                delete_inode(data["id"], channel)
             case _:
                 raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
