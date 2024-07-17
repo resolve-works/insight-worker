@@ -162,7 +162,7 @@ def index_inode(id, channel):
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
-        inode.file.is_indexed = True
+        inode.is_indexed = True
         session.commit()
 
         channel.basic_publish(
@@ -210,15 +210,23 @@ def delete_inode(id, channel):
         # Select the paths for the given inode
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
-        # Select tho paths of all this inodes descendants
-        stmt = (
-            select(Inodes)
-                .where(Inodes.id.in_(select(func.descendants(Inodes.id)).where(Inodes.id == id)))
-        )
+
+        # Select the paths of all this inodes descendants recursively
+        hierarchy = (         
+            select(Inodes.id, Inodes.parent_id)         
+            .where(Inodes.parent_id == id)         
+            .cte(name='hierarchy', recursive=True)     
+        )      
+        hierarchy = hierarchy.union_all(
+            select(Inodes.id, Inodes.parent_id)
+            .join(hierarchy, Inodes.parent_id == hierarchy.c.id)
+        )     
+        stmt = select(Inodes).join(hierarchy, Inodes.id == hierarchy.c.id)          
         descendants = session.scalars(stmt).all()
 
         # Make sure all original and optimized files are destroyed
-        paths = [inode.path for inode in descendants] + [inode.path]
+        paths = [f"users/{inode.owner_id}/{inode.path}" for inode in descendants] \
+                + [f"users/{inode.owner_id}/{inode.path}"]
         paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
         paths = [path for tuple in paths for path in tuple]
 
@@ -235,7 +243,7 @@ def delete_inode(id, channel):
                 }
             }
         }
-        res = opensearch_request("post", "/files/_delete_by_query", data)
+        res = opensearch_request("post", "/inodes/_delete_by_query", data)
         if res.status_code != 200:
             raise Exception(res.text)
 
