@@ -74,6 +74,7 @@ class Inodes(Base):
     name: Mapped[str] = mapped_column(Text)
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    path: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     file_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)

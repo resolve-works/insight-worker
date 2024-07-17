@@ -66,10 +66,12 @@ def ingest_file(id, channel):
 
     with Session(engine) as session:
         stmt = (
-        select(Inodes, func.storage_path(Inodes)) .join(Inodes.file) .where(Inodes.id == id)
-                )
+            select(Inodes)
+                .join(Inodes.file) 
+                .where(Inodes.id == id)
+        )
         inode = session.scalars(stmt).one()
-        path = f"users/{inode.owner_id}/{inode.storage_path}"
+        path = f"users/{inode.owner_id}/{inode.path}"
 
         minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
@@ -115,7 +117,7 @@ def ingest_file(id, channel):
         session.commit()
 
         # Trigger next tasks
-        for routing_key in ["index_file", "embed_file"]:
+        for routing_key in ["index_inode", "embed_file"]:
             channel.basic_publish(
                 exchange="insight",
                 routing_key=routing_key,
@@ -129,28 +131,23 @@ def ingest_file(id, channel):
         )
 
 
-def index_file(id, channel):
-    logging.info(f"Indexing file {id}")
+def index_inode(id, channel):
+    logging.info(f"Indexing inode {id}")
 
     with Session(engine) as session:
-        stmt = (
-                select(Inodes, func.storage_path(Inodes))
-                .join(Inodes.file)
-                .where(Inodes.id == id)
-                )
+        stmt = select(Inodes).join(Inodes.file).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.file_id == inode.file.file_id)
+            .where(Pages.file_id == inode.file_id)
         )
         pages = session.scalars(stmt).all()
 
         # Index file with pages
         data = {
-            "path": inode.storage_path,
-            "filename": inode.file.name,
-            "owner_id": str(inode.owner_id),
+            "path": f"users/{inode.owner_id}/{inode.path}",
+            "filename": inode.name,
             "pages": [
                 {
                     "file_id": str(inode.id),
@@ -171,7 +168,7 @@ def index_file(id, channel):
         channel.basic_publish(
             exchange="",
             routing_key=f"user-{inode.owner_id}",
-            body=json.dumps({"id": str(inode.id), "task": "index_file"}),
+            body=json.dumps({"id": str(inode.id), "task": "index_inode"}),
         )
 
 
@@ -211,20 +208,17 @@ def delete_inode(id, channel):
 
     with Session(engine) as session:
         # Select the paths for the given inode
-        stmt = (
-            select(func.storage_path(Inodes))
-                .where(Inodes.id == id)
-        )
-        path = session.scalars(stmt).one()
+        stmt = select(Inodes).where(Inodes.id == id)
+        inode = session.scalars(stmt).one()
         # Select tho paths of all this inodes descendants
         stmt = (
-            select(func.storage_path(Inodes))
-                .where(Inodes.id.in_(select(func.descendants(Inodes)).where(Inodes.id == id)))
+            select(Inodes)
+                .where(Inodes.id.in_(select(func.descendants(Inodes.id)).where(Inodes.id == id)))
         )
-        paths = session.scalars(stmt).all()
+        descendants = session.scalars(stmt).all()
 
         # Make sure all original and optimized files are destroyed
-        paths = paths + [path]
+        paths = [inode.path for inode in descendants] + [inode.path]
         paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
         paths = [path for tuple in paths for path in tuple]
 
@@ -237,7 +231,7 @@ def delete_inode(id, channel):
         data = {
             "query": {
                 "match": {
-                    "path": f"{path}*"
+                    "path": f"users/{inode.owner_id}/{inode.path}*"
                 }
             }
         }

@@ -6,8 +6,8 @@ from os import environ as env
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
 from .tasks import (
     ingest_file,
-    index_file,
     embed_file,
+    index_inode,
     delete_inode,
     answer_prompt,
 )
@@ -44,8 +44,8 @@ def on_message(channel, method_frame, header_frame, body):
         match method_frame.routing_key:
             case "ingest_file":
                 ingest_file(data["id"], channel)
-            case "index_file":
-                index_file(data["id"], channel)
+            case "index_inode":
+                index_inode(data["id"], channel)
             case "embed_file":
                 embed_file(data["id"], channel)
             case "answer_prompt":
