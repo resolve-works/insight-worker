@@ -65,11 +65,7 @@ def ingest_file(id, channel):
     optimized_path = temp_path / "optimized"
 
     with Session(engine) as session:
-        stmt = (
-            select(Inodes)
-                .join(Inodes.file) 
-                .where(Inodes.id == id)
-        )
+        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         path = f"users/{inode.owner_id}/{inode.path}"
 
@@ -77,15 +73,15 @@ def ingest_file(id, channel):
 
         # Analyze file, store meta
         with Pdf.open(original_path) as file_pdf:
-            if not inode.file.to_page:
-                inode.file.to_page = len(file_pdf.pages)
+            if not inode.files.to_page:
+                inode.files.to_page = len(file_pdf.pages)
 
-            before_range = range(0, inode.file.from_page)
-            after_range = range(inode.file.to_page, len(file_pdf.pages))
+            before_range = range(0, inode.files.from_page)
+            after_range = range(inode.files.to_page, len(file_pdf.pages))
             pages_to_delete = list(chain(before_range, after_range))
 
             # Split file from original if there's pages explicitely set
-            if(len(pages_to_delete)):
+            if len(pages_to_delete):
                 # Reverse the range to remove last page first as the file shrinks
                 # when removing pages, leading to IndexErrors otherwise
                 for p in reversed(pages_to_delete):
@@ -97,7 +93,9 @@ def ingest_file(id, channel):
         process.start()
         process.join()
 
-        minio.fput_object(env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path)
+        minio.fput_object(
+            env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
+        )
 
         # fitz is pyMuPDF used for extracting text layers
         file_pdf = fitz.open(optimized_path)
@@ -107,13 +105,13 @@ def ingest_file(id, channel):
                 # Get all contents, sorted by position on page
                 contents=page.get_text(sort=True).strip(),
                 # Index pages in file instead of in file
-                index=inode.file.from_page + index,
-                file_id=inode.file_id,
+                index=inode.files.from_page + index,
+                inode_id=inode.id,
             )
             for index, page in enumerate(file_pdf)
         ]
         session.add_all(pages)
-        inode.file.is_ingested = True
+        inode.files.is_ingested = True
         session.commit()
 
         # Trigger next tasks
@@ -135,23 +133,26 @@ def index_inode(id, channel):
     logging.info(f"Indexing inode {id}")
 
     with Session(engine) as session:
-        stmt = select(Inodes).join(Inodes.file).where(Inodes.id == id)
+        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.file_id == inode.file_id)
+            .where(Pages.inode_id == inode.id)
         )
         pages = session.scalars(stmt).all()
 
-        # Index file with pages
+        # Index file with pages and folder
         data = {
-            "path": f"users/{inode.owner_id}/{inode.path}",
+            "path": f"/{inode.path}",
+            "folder": str(Path("/" + inode.path).parent),
             "filename": inode.name,
+            "owner_id": str(inode.owner_id),
+            "readable_by": [str(inode.owner_id)],
             "pages": [
                 {
                     "file_id": str(inode.id),
-                    "index": page.index - inode.file.from_page,
+                    "index": page.index - inode.files.from_page,
                     "contents": page.contents,
                 }
                 for page in pages
@@ -176,15 +177,15 @@ def embed_file(id, channel):
     logging.info(f"Embedding file {id}")
 
     with Session(engine) as session:
-        stmt = select(Inodes).join(Inodes.file).where(Inodes.id == id)
+        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
-            .where(Pages.index >= inode.file.from_page)
-            .where(Pages.index < inode.file.to_page)
+            .where(Pages.index >= inode.files.from_page)
+            .where(Pages.index < inode.files.to_page)
             .where(Pages.embedding == None)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.file_id == inode.file_id)
+            .where(Pages.inode_id == inode.id)
         )
         pages = session.scalars(stmt).all()
         embeddings = embed([page.contents for page in pages])
@@ -192,7 +193,7 @@ def embed_file(id, channel):
         for embedding, page in zip(embeddings, pages):
             page.embedding = embedding
 
-        inode.file.is_embedded = True
+        inode.files.is_embedded = True
         session.commit()
 
         channel.basic_publish(
@@ -212,21 +213,28 @@ def delete_inode(id, channel):
         inode = session.scalars(stmt).one()
 
         # Select the paths of all this inodes descendants recursively
-        hierarchy = (         
-            select(Inodes.id, Inodes.parent_id)         
-            .where(Inodes.parent_id == id)         
-            .cte(name='hierarchy', recursive=True)     
-        )      
-        hierarchy = hierarchy.union_all(
+        hierarchy = (
             select(Inodes.id, Inodes.parent_id)
-            .join(hierarchy, Inodes.parent_id == hierarchy.c.id)
-        )     
-        stmt = select(Inodes).join(hierarchy, Inodes.id == hierarchy.c.id)          
+            .where(Inodes.parent_id == id)
+            .cte(name="hierarchy", recursive=True)
+        )
+        hierarchy = hierarchy.union_all(
+            select(Inodes.id, Inodes.parent_id).join(
+                hierarchy, Inodes.parent_id == hierarchy.c.id
+            )
+        )
+        stmt = (
+            # Only select files inodes
+            select(Inodes)
+            .join(hierarchy, Inodes.id == hierarchy.c.id)
+            .join(Files, Inodes.id == Files.inode_id)
+        )
         descendants = session.scalars(stmt).all()
 
         # Make sure all original and optimized files are destroyed
-        paths = [f"users/{inode.owner_id}/{inode.path}" for inode in descendants] \
-                + [f"users/{inode.owner_id}/{inode.path}"]
+        paths = [f"users/{inode.owner_id}/{inode.path}" for inode in descendants] + [
+            f"users/{inode.owner_id}/{inode.path}"
+        ]
         paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
         paths = [path for tuple in paths for path in tuple]
 
@@ -238,14 +246,25 @@ def delete_inode(id, channel):
         # Remove indexed contents of files that descend this inode
         data = {
             "query": {
-                "match": {
-                    "path": f"users/{inode.owner_id}/{inode.path}*"
+                "bool": {
+                    "must": [
+                        {
+                            "match": {
+                                "path": f"/{inode.path}*",
+                            },
+                            "match": {
+                                "owner_id": str(inode.owner_id),
+                            },
+                        }
+                    ]
                 }
             }
         }
         res = opensearch_request("post", "/inodes/_delete_by_query", data)
         if res.status_code != 200:
-            raise Exception(res.text)
+            # Record could be not found for whatever reason
+            data = res.json()
+            logging.error(data["error"]["reason"])
 
         stmt = delete(Inodes).where(Inodes.id == id)
         session.execute(stmt)
@@ -270,8 +289,8 @@ def answer_prompt(id, channel):
                 Pages.contents,
             )
             .order_by(text("distance asc"))
-            .join(Pages.file)
-            .where(Files.owner_id == prompt.owner_id)
+            .join(Pages.inode)
+            .where(Inodes.owner_id == prompt.owner_id)
             .where(Pages.embedding != None)
             .limit(prompt.similarity_top_k)
         )

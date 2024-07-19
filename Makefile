@@ -1,4 +1,7 @@
 
+delete_index:
+	set -a; source ./.env; set +a; poetry run insight-worker delete-index
+
 ingest:
 	set -a; source ./.env; set +a; QUEUE=ingest poetry run insight-worker process-messages
 

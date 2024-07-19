@@ -12,27 +12,45 @@ from .tasks import (
     answer_prompt,
 )
 from .opensearch import opensearch_request
-from sqlalchemy.exc import NoResultFound
 
 logging.basicConfig(level=logging.INFO)
 
 
 # Make elastic treat pages as nested objects
-def create_mapping():
+def configure_index():
     logging.info("Creating index")
 
-    json = {"mappings": {"properties": {"pages": {"type": "nested"}}}}
+    json = {
+        "settings": {
+            "analysis": {
+                "analyzer": {"path_analyzer": {"tokenizer": "path_tokenizer"}},
+                "tokenizer": {
+                    "path_tokenizer": {
+                        "type": "path_hierarchy",
+                    }
+                },
+            }
+        },
+        "mappings": {
+            "properties": {
+                "pages": {"type": "nested"},
+                "folder": {
+                    "type": "text",
+                    "analyzer": "path_analyzer",
+                    "fielddata": True,
+                },
+            }
+        },
+    }
     res = opensearch_request("put", "/inodes", json)
 
     if res.status_code == 200:
         logging.info("Index created succesfully")
-        return
     elif (
         res.status_code == 400
         and res.json()["error"]["type"] == "resource_already_exists_exception"
     ):
         logging.info("Index creation skipped, index already exists")
-        return
     else:
         raise Exception(res.text)
 
@@ -79,8 +97,18 @@ def cli():
 
 
 @cli.command()
+def delete_index():
+    res = opensearch_request("delete", "/inodes")
+
+    if res.status_code == 200:
+        logging.info("Index destroyed succesfully")
+    else:
+        raise Exception(res.text)
+
+
+@cli.command()
 def process_messages():
-    create_mapping()
+    configure_index()
 
     ssl_options = None
     if env.get("RABBITMQ_SSL").lower() == "true":
