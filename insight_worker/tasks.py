@@ -203,6 +203,19 @@ def embed_file(id, channel):
         )
 
 
+def inode_hierarchy(id):
+    hierarchy = (
+        select(Inodes.id, Inodes.parent_id)
+        .where(Inodes.parent_id == id)
+        .cte(name="hierarchy", recursive=True)
+    )
+    return hierarchy.union_all(
+        select(Inodes.id, Inodes.parent_id).join(
+            hierarchy, Inodes.parent_id == hierarchy.c.id
+        )
+    )
+
+
 def delete_inode(id, channel):
     logging.info(f"Deleting inode {id}")
     minio = get_minio()
@@ -213,16 +226,7 @@ def delete_inode(id, channel):
         inode = session.scalars(stmt).one()
 
         # Select the paths of all this inodes descendants recursively
-        hierarchy = (
-            select(Inodes.id, Inodes.parent_id)
-            .where(Inodes.parent_id == id)
-            .cte(name="hierarchy", recursive=True)
-        )
-        hierarchy = hierarchy.union_all(
-            select(Inodes.id, Inodes.parent_id).join(
-                hierarchy, Inodes.parent_id == hierarchy.c.id
-            )
-        )
+        hierarchy = inode_hierarchy(id)
         stmt = (
             # Only select files inodes
             select(Inodes)
@@ -269,6 +273,22 @@ def delete_inode(id, channel):
         stmt = delete(Inodes).where(Inodes.id == id)
         session.execute(stmt)
         session.commit()
+
+
+def move_inode(id, channel):
+    logging.info(f"Moving inode {id}")
+    minio = get_minio()
+
+    with Session(engine) as session:
+        hierarchy = inode_hierarchy(id)
+        stmt = (
+            # Only select files inodes
+            select(Inodes, func.inode_path(Inodes.id))
+            .join(hierarchy, Inodes.id == hierarchy.c.id)
+            .join(Files, Inodes.id == Files.inode_id)
+        )
+        descendants = session.scalars(stmt).all()
+        print([d.name for d in descendants])
 
 
 def answer_prompt(id, channel):

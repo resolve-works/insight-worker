@@ -9,6 +9,7 @@ from .tasks import (
     embed_file,
     index_inode,
     delete_inode,
+    move_inode,
     answer_prompt,
 )
 from .opensearch import opensearch_request
@@ -70,6 +71,8 @@ def on_message(channel, method_frame, header_frame, body):
                 answer_prompt(data["id"], channel)
             case "delete_inode":
                 delete_inode(data["id"], channel)
+            case "move_inode":
+                move_inode(data["id"], channel)
             case _:
                 raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
