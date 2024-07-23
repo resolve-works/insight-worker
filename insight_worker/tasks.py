@@ -3,6 +3,7 @@ import ocrmypdf
 import fitz
 import json
 from minio import Minio
+from minio.commonconfig import CopySource
 from minio.deleteobjects import DeleteObject
 from os import environ as env
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from pikepdf import Pdf
 from itertools import chain
 from sqlalchemy import create_engine, select, text, delete, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import NoResultFound
 from .models import Files, Prompts, Sources, Pages, Inodes
 from .opensearch import opensearch_request
 from .rag import embed, complete
@@ -21,6 +23,10 @@ from .rag import embed, complete
 logging.basicConfig(level=logging.INFO)
 
 engine = create_engine(env.get("POSTGRES_URI"))
+
+
+def inode_path(owner_id, path):
+    return f"users/{owner_id}/{path}"
 
 
 def get_minio():
@@ -67,7 +73,7 @@ def ingest_file(id, channel):
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
-        path = f"users/{inode.owner_id}/{inode.path}"
+        path = inode_path(inode.owner_id, inode.path)
 
         minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
@@ -133,7 +139,7 @@ def index_inode(id, channel):
     logging.info(f"Indexing inode {id}")
 
     with Session(engine) as session:
-        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
+        stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         stmt = (
             select(Pages)
@@ -203,19 +209,6 @@ def embed_file(id, channel):
         )
 
 
-def inode_hierarchy(id):
-    hierarchy = (
-        select(Inodes.id, Inodes.parent_id)
-        .where(Inodes.parent_id == id)
-        .cte(name="hierarchy", recursive=True)
-    )
-    return hierarchy.union_all(
-        select(Inodes.id, Inodes.parent_id).join(
-            hierarchy, Inodes.parent_id == hierarchy.c.id
-        )
-    )
-
-
 def delete_inode(id, channel):
     logging.info(f"Deleting inode {id}")
     minio = get_minio()
@@ -226,9 +219,18 @@ def delete_inode(id, channel):
         inode = session.scalars(stmt).one()
 
         # Select the paths of all this inodes descendants recursively
-        hierarchy = inode_hierarchy(id)
+        hierarchy = (
+            select(Inodes.id, Inodes.parent_id)
+            .where(Inodes.parent_id == id)
+            .cte(name="hierarchy", recursive=True)
+        )
+        hierarchy = hierarchy.union_all(
+            select(Inodes.id, Inodes.parent_id).join(
+                hierarchy, Inodes.parent_id == hierarchy.c.id
+            )
+        )
         stmt = (
-            # Only select files inodes
+            # Only get inodes with an associated file to delete
             select(Inodes)
             .join(hierarchy, Inodes.id == hierarchy.c.id)
             .join(Files, Inodes.id == Files.inode_id)
@@ -236,13 +238,12 @@ def delete_inode(id, channel):
         descendants = session.scalars(stmt).all()
 
         # Make sure all original and optimized files are destroyed
-        paths = [f"users/{inode.owner_id}/{inode.path}" for inode in descendants] + [
-            f"users/{inode.owner_id}/{inode.path}"
+        paths = [inode_path(inode.owner_id, inode.path) for inode in descendants] + [
+            inode_path(inode.owner_id, inode.path)
         ]
         paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
-        paths = [path for tuple in paths for path in tuple]
+        delete_objects = (DeleteObject(path) for tuple in paths for path in tuple)
 
-        delete_objects = map(lambda path: DeleteObject(path), paths)
         errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
         for error in errors:
             logging.error("error occurred when deleting object", error)
@@ -280,15 +281,53 @@ def move_inode(id, channel):
     minio = get_minio()
 
     with Session(engine) as session:
-        hierarchy = inode_hierarchy(id)
-        stmt = (
-            # Only select files inodes
-            select(Inodes, func.inode_path(Inodes.id))
-            .join(hierarchy, Inodes.id == hierarchy.c.id)
-            .join(Files, Inodes.id == Files.inode_id)
+        stmt = select(Inodes).where(Inodes.id == id)
+        inode = session.scalars(stmt).one()
+        stmt = select(func.inode_path(Inodes.id)).where(Inodes.id == id)
+        path = session.scalars(stmt).one()
+
+        # Move in storage backend if this is a file
+        try:
+            # This will error when no file is found
+            stmt = select(Files).where(Files.inode_id == id)
+            session.scalars(stmt).one()
+
+            # Move both files
+            for file in ["original", "optimized"]:
+                new_path = inode_path(inode.owner_id, path) + f"/{file}"
+                old_path = inode_path(inode.owner_id, inode.path) + f"/{file}"
+
+                # TODO - Proper error handling of storage failing
+                minio.copy_object(
+                    env.get("STORAGE_BUCKET"),
+                    new_path,
+                    CopySource(env.get("STORAGE_BUCKET"), old_path),
+                )
+
+                minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
+        except NoResultFound:
+            pass
+
+        # Move succesful, save new path
+        inode.path = path
+        session.commit()
+
+        # reindex
+        channel.basic_publish(
+            exchange="insight",
+            routing_key="index_inode",
+            body=json.dumps({"id": id}),
         )
-        descendants = session.scalars(stmt).all()
-        print([d.name for d in descendants])
+
+        # Trigger move of children
+        stmt = select(Inodes).where(Inodes.parent_id == id)
+        children = session.scalars(stmt).all()
+        for inode in children:
+            channel.basic_publish(
+                exchange="insight",
+                routing_key="move_inode",
+                body=json.dumps({"id": inode.id}),
+            )
 
 
 def answer_prompt(id, channel):
