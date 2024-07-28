@@ -1,4 +1,7 @@
 
+rebuild_index:
+	set -a; source ./.env; set +a; poetry run insight-worker rebuild-index
+
 delete_index:
 	set -a; source ./.env; set +a; poetry run insight-worker delete-index
 

@@ -62,7 +62,7 @@ def ocrmypdf_process(input_file, output_file):
     )
 
 
-def ingest_file(id, channel):
+def ingest_file(id):
     logging.info(f"Ingesting file {id}")
     minio = get_minio()
 
@@ -119,25 +119,11 @@ def ingest_file(id, channel):
         session.add_all(pages)
         inode.files.is_ingested = True
         session.commit()
-
-        # Trigger next tasks
-        for routing_key in ["index_inode", "embed_file"]:
-            channel.basic_publish(
-                exchange="insight",
-                routing_key=routing_key,
-                body=json.dumps({"id": str(inode.id)}),
-            )
-        # Let user know
-        channel.basic_publish(
-            exchange="",
-            routing_key=f"user-{inode.owner_id}",
-            body=json.dumps({"id": str(inode.id), "task": "ingest_file"}),
-        )
+        return inode
 
 
-def index_inode(id, channel):
+def index_inode(id):
     logging.info(f"Indexing inode {id}")
-
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
@@ -149,40 +135,36 @@ def index_inode(id, channel):
         pages = session.scalars(stmt).all()
 
         # Index file with pages and folder
-        data = {
-            "path": f"/{inode.path}",
-            "type": inode.type,
-            "folder": str(Path("/" + inode.path).parent),
-            "filename": inode.name,
-            "owner_id": str(inode.owner_id),
-            "readable_by": [str(inode.owner_id)],
-            "pages": [
-                {
-                    "file_id": str(inode.id),
-                    "index": page.index - inode.files.from_page,
-                    "contents": page.contents,
-                }
-                for page in pages
-            ],
-        }
-
-        res = opensearch_request("put", f"/inodes/_doc/{str(inode.id)}", data)
+        res = opensearch_request(
+            "put",
+            f"/inodes/_doc/{str(inode.id)}",
+            {
+                "path": f"/{inode.path}",
+                "type": inode.type,
+                "folder": str(Path("/" + inode.path).parent),
+                "filename": inode.name,
+                "owner_id": str(inode.owner_id),
+                "readable_by": [str(inode.owner_id)],
+                "pages": [
+                    {
+                        "file_id": str(inode.id),
+                        "index": page.index - inode.files.from_page,
+                        "contents": page.contents,
+                    }
+                    for page in pages
+                ],
+            },
+        )
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
         inode.is_indexed = True
         session.commit()
-
-        channel.basic_publish(
-            exchange="",
-            routing_key=f"user-{inode.owner_id}",
-            body=json.dumps({"id": str(inode.id), "task": "index_inode"}),
-        )
+        return inode
 
 
-def embed_file(id, channel):
+def embed_file(id):
     logging.info(f"Embedding file {id}")
-
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
@@ -202,12 +184,7 @@ def embed_file(id, channel):
 
         inode.files.is_embedded = True
         session.commit()
-
-        channel.basic_publish(
-            exchange="",
-            routing_key=f"user-{inode.owner_id}",
-            body=json.dumps({"id": str(inode.id), "task": "embed_file"}),
-        )
+        return inode
 
 
 def delete_inode(id, channel):
@@ -222,7 +199,7 @@ def delete_inode(id, channel):
         # Select the paths of all this inodes descendants recursively
         hierarchy = (
             select(Inodes.id, Inodes.parent_id)
-            .where(Inodes.parent_id == id)
+            .where(Inodes.parent_id == inode.id)
             .cte(name="hierarchy", recursive=True)
         )
         hierarchy = hierarchy.union_all(
@@ -272,7 +249,7 @@ def delete_inode(id, channel):
             data = res.json()
             logging.error(data["error"]["reason"])
 
-        stmt = delete(Inodes).where(Inodes.id == id)
+        stmt = delete(Inodes).where(Inodes.id == inode.id)
         session.execute(stmt)
         session.commit()
 
@@ -284,13 +261,13 @@ def move_inode(id, channel):
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
-        stmt = select(func.inode_path(Inodes.id)).where(Inodes.id == id)
+        stmt = select(func.inode_path(Inodes.id)).where(Inodes.id == inode.id)
         path = session.scalars(stmt).one()
 
         # Move in storage backend if this is a file
         try:
             # This will error when no file is found
-            stmt = select(Files).where(Files.inode_id == id)
+            stmt = select(Files).where(Files.inode_id == inode.id)
             session.scalars(stmt).one()
 
             # Move both files
@@ -317,11 +294,11 @@ def move_inode(id, channel):
         channel.basic_publish(
             exchange="insight",
             routing_key="index_inode",
-            body=json.dumps({"id": id}),
+            body=json.dumps({"id": inode.id}),
         )
 
         # Trigger move of children
-        stmt = select(Inodes).where(Inodes.parent_id == id)
+        stmt = select(Inodes).where(Inodes.parent_id == inode.id)
         children = session.scalars(stmt).all()
         for inode in children:
             channel.basic_publish(
@@ -333,7 +310,6 @@ def move_inode(id, channel):
 
 def answer_prompt(id, channel):
     logging.info(f"Answering prompt {id}")
-
     # Get pages that have an embedding that is close to the query
     with Session(engine) as session:
         stmt = select(Prompts).where(Prompts.id == id)

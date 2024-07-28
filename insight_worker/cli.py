@@ -4,6 +4,9 @@ import json
 import ssl
 from os import environ as env
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+from .models import Inodes
 from .tasks import (
     ingest_file,
     embed_file,
@@ -57,22 +60,44 @@ def configure_index():
 
 
 def on_message(channel, method_frame, header_frame, body):
-    data = json.loads(body)
+    id = json.loads(body)["id"]
 
     try:
         match method_frame.routing_key:
             case "ingest_file":
-                ingest_file(data["id"], channel)
+                inode = ingest_file(id)
+                # Trigger next tasks
+                for routing_key in ["index_inode", "embed_file"]:
+                    channel.basic_publish(
+                        exchange="insight",
+                        routing_key=routing_key,
+                        body=json.dumps({"id": str(inode.id)}),
+                    )
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=f"user-{inode.owner_id}",
+                    body=json.dumps({"id": str(inode.id), "task": "ingest_file"}),
+                )
             case "index_inode":
-                index_inode(data["id"], channel)
+                inode = index_inode(id)
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=f"user-{inode.owner_id}",
+                    body=json.dumps({"id": str(inode.id), "task": "index_inode"}),
+                )
             case "embed_file":
-                embed_file(data["id"], channel)
+                inode = embed_file(id)
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=f"user-{inode.owner_id}",
+                    body=json.dumps({"id": str(inode.id), "task": "embed_file"}),
+                )
             case "answer_prompt":
-                answer_prompt(data["id"], channel)
+                answer_prompt(id, channel)
             case "delete_inode":
-                delete_inode(data["id"], channel)
+                delete_inode(id, channel)
             case "move_inode":
-                move_inode(data["id"], channel)
+                move_inode(id, channel)
             case _:
                 raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
@@ -107,6 +132,18 @@ def delete_index():
         logging.info("Index destroyed succesfully")
     else:
         raise Exception(res.text)
+
+
+@cli.command()
+def rebuild_index():
+    engine = create_engine(env.get("POSTGRES_URI"))
+
+    with Session(engine) as session:
+        stmt = select(Inodes.id)
+        inodes = session.scalars(stmt).all()
+
+        for inode_id in inodes:
+            index_inode(inode_id)
 
 
 @cli.command()
