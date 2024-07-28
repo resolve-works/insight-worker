@@ -73,7 +73,8 @@ def ingest_file(id):
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
-        path = inode_path(inode.owner_id, inode.path)
+        owner_id = inode.owner_id
+        path = inode_path(owner_id, inode.path)
 
         minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
@@ -119,7 +120,8 @@ def ingest_file(id):
         session.add_all(pages)
         inode.files.is_ingested = True
         session.commit()
-        return inode
+        # TODO - remove me
+        return owner_id
 
 
 def index_inode(id):
@@ -127,6 +129,7 @@ def index_inode(id):
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
+        owner_id = inode.owner_id
         stmt = (
             select(Pages)
             .where(func.length(Pages.contents) > 0)
@@ -143,8 +146,8 @@ def index_inode(id):
                 "type": inode.type,
                 "folder": str(Path("/" + inode.path).parent),
                 "filename": inode.name,
-                "owner_id": str(inode.owner_id),
-                "readable_by": [str(inode.owner_id)],
+                "owner_id": str(owner_id),
+                "readable_by": [str(owner_id)],
                 "pages": [
                     {
                         "file_id": str(inode.id),
@@ -160,7 +163,7 @@ def index_inode(id):
 
         inode.is_indexed = True
         session.commit()
-        return inode
+        return owner_id
 
 
 def embed_file(id):
@@ -168,6 +171,7 @@ def embed_file(id):
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
+        owner_id = inode.owner_id
         stmt = (
             select(Pages)
             .where(Pages.index >= inode.files.from_page)
@@ -184,7 +188,7 @@ def embed_file(id):
 
         inode.files.is_embedded = True
         session.commit()
-        return inode
+        return owner_id
 
 
 def delete_inode(id, channel):
@@ -226,24 +230,33 @@ def delete_inode(id, channel):
         for error in errors:
             logging.error("error occurred when deleting object", error)
 
+        print(inode.path, str(inode.owner_id))
+
         # Remove indexed contents of files that descend this inode
-        data = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "match": {
-                                "path": f"/{inode.path}*",
+        res = opensearch_request(
+            "post",
+            "/inodes/_delete_by_query",
+            {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "wildcard": {
+                                    "path.keyword": {
+                                        "value": f"/{inode.path}*",
+                                    }
+                                },
                             },
-                            "match": {
-                                "owner_id": str(inode.owner_id),
+                            {
+                                "term": {
+                                    "owner_id.keyword": str(inode.owner_id),
+                                },
                             },
-                        }
-                    ]
+                        ]
+                    }
                 }
-            }
-        }
-        res = opensearch_request("post", "/inodes/_delete_by_query", data)
+            },
+        )
         if res.status_code != 200:
             # Record could be not found for whatever reason
             data = res.json()

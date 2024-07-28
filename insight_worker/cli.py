@@ -65,32 +65,32 @@ def on_message(channel, method_frame, header_frame, body):
     try:
         match method_frame.routing_key:
             case "ingest_file":
-                inode = ingest_file(id)
+                owner_id = ingest_file(id)
                 # Trigger next tasks
                 for routing_key in ["index_inode", "embed_file"]:
                     channel.basic_publish(
                         exchange="insight",
                         routing_key=routing_key,
-                        body=json.dumps({"id": str(inode.id)}),
+                        body=json.dumps({"id": str(id)}),
                     )
                 channel.basic_publish(
                     exchange="",
-                    routing_key=f"user-{inode.owner_id}",
-                    body=json.dumps({"id": str(inode.id), "task": "ingest_file"}),
+                    routing_key=f"user-{owner_id}",
+                    body=json.dumps({"id": str(id), "task": "ingest_file"}),
                 )
             case "index_inode":
-                inode = index_inode(id)
+                owner_id = index_inode(id)
                 channel.basic_publish(
                     exchange="",
-                    routing_key=f"user-{inode.owner_id}",
-                    body=json.dumps({"id": str(inode.id), "task": "index_inode"}),
+                    routing_key=f"user-{owner_id}",
+                    body=json.dumps({"id": str(id), "task": "index_inode"}),
                 )
             case "embed_file":
-                inode = embed_file(id)
+                owner_id = embed_file(id)
                 channel.basic_publish(
                     exchange="",
-                    routing_key=f"user-{inode.owner_id}",
-                    body=json.dumps({"id": str(inode.id), "task": "embed_file"}),
+                    routing_key=f"user-{owner_id}",
+                    body=json.dumps({"id": str(id), "task": "embed_file"}),
                 )
             case "answer_prompt":
                 answer_prompt(id, channel)
