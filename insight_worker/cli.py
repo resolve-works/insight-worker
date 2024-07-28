@@ -4,7 +4,7 @@ import json
 import ssl
 from os import environ as env
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 from .models import Inodes
 from .tasks import (
@@ -139,6 +139,10 @@ def rebuild_index():
     engine = create_engine(env.get("POSTGRES_URI"))
 
     with Session(engine) as session:
+        stmt = update(Inodes).values(is_indexed=False)
+        session.execute(stmt)
+        session.commit()
+
         stmt = select(Inodes.id)
         inodes = session.scalars(stmt).all()
 
