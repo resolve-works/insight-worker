@@ -151,6 +151,7 @@ def index_inode(id, channel):
         # Index file with pages and folder
         data = {
             "path": f"/{inode.path}",
+            "type": inode.type,
             "folder": str(Path("/" + inode.path).parent),
             "filename": inode.name,
             "owner_id": str(inode.owner_id),

@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Computed, DateTime, Double, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Computed, DateTime, Double, Enum, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import CITEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
@@ -23,6 +23,7 @@ class Inodes(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    type: Mapped[str] = mapped_column(Enum('folder', 'file', name='inode_type'), server_default=text("'folder'::inode_type"))
     name: Mapped[str] = mapped_column(Text)
     path: Mapped[str] = mapped_column(CITEXT)
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
