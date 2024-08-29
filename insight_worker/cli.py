@@ -13,7 +13,6 @@ from .tasks import (
     index_inode,
     delete_inode,
     move_inode,
-    answer_prompt,
 )
 from .opensearch import opensearch_request
 
@@ -92,8 +91,6 @@ def on_message(channel, method_frame, header_frame, body):
                     routing_key=f"user-{owner_id}",
                     body=json.dumps({"id": str(id), "task": "embed_file"}),
                 )
-            case "answer_prompt":
-                answer_prompt(id, channel)
             case "delete_inode":
                 delete_inode(id, channel)
             case "move_inode":

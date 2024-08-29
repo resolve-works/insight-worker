@@ -12,12 +12,12 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from pikepdf import Pdf
 from itertools import chain
-from sqlalchemy import create_engine, select, text, delete, func
+from sqlalchemy import create_engine, select, delete, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import NoResultFound
-from .models import Files, Prompts, Sources, Pages, Inodes
+from .models import Files, Pages, Inodes
 from .opensearch import opensearch_request
-from .rag import embed, complete
+from .rag import embed
 
 
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +26,7 @@ engine = create_engine(env.get("POSTGRES_URI"))
 
 
 def inode_path(owner_id, path):
-    return f"users/{owner_id}/{path}"
+    return f"users/{owner_id}{path}"
 
 
 def get_minio():
@@ -142,9 +142,9 @@ def index_inode(id):
             "put",
             f"/inodes/_doc/{str(inode.id)}",
             {
-                "path": f"/{inode.path}",
+                "path": f"{inode.path}",
                 "type": inode.type,
-                "folder": str(Path("/" + inode.path).parent),
+                "folder": str(Path(inode.path).parent),
                 "filename": inode.name,
                 "owner_id": str(owner_id),
                 "readable_by": [str(owner_id)],
@@ -230,8 +230,6 @@ def delete_inode(id, channel):
         for error in errors:
             logging.error("error occurred when deleting object", error)
 
-        print(inode.path, str(inode.owner_id))
-
         # Remove indexed contents of files that descend this inode
         res = opensearch_request(
             "post",
@@ -243,7 +241,7 @@ def delete_inode(id, channel):
                             {
                                 "wildcard": {
                                     "path.keyword": {
-                                        "value": f"/{inode.path}*",
+                                        "value": f"{inode.path}*",
                                     }
                                 },
                             },
@@ -319,47 +317,3 @@ def move_inode(id, channel):
                 routing_key="move_inode",
                 body=json.dumps({"id": inode.id}),
             )
-
-
-def answer_prompt(id, channel):
-    logging.info(f"Answering prompt {id}")
-    # Get pages that have an embedding that is close to the query
-    with Session(engine) as session:
-        stmt = select(Prompts).where(Prompts.id == id)
-        prompt = session.scalars(stmt).one()
-
-        # Embed query
-        embedding = next(embed([prompt.query]))
-
-        stmt = (
-            select(
-                Pages.id,
-                Pages.embedding.cosine_distance(embedding).label("distance"),
-                Pages.contents,
-            )
-            .order_by(text("distance asc"))
-            .join(Pages.inode)
-            .where(Inodes.owner_id == prompt.owner_id)
-            .where(Pages.embedding != None)
-            .limit(prompt.similarity_top_k)
-        )
-
-        pages = session.execute(stmt).all()
-
-        # Create response by sending pages to chat completion
-        response = complete(prompt.query, [contents for (_, _, contents) in pages])
-        prompt.response = response
-
-        for page_id, distance, _ in pages:
-            source = Sources(
-                page_id=page_id,
-                similarity=(1 - distance) if distance is not None else 0,
-            )
-            prompt.sources.append(source)
-        session.commit()
-
-        channel.basic_publish(
-            exchange="",
-            routing_key=f"user-{prompt.owner_id}",
-            body=json.dumps({"id": str(prompt.id), "task": "answer_prompt"}),
-        )

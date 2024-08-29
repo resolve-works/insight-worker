@@ -10,13 +10,6 @@ headers = {
 
 encoding = tiktoken.get_encoding("cl100k_base")
 
-SYSTEM_PROMPT = """
-You are a helpful AI assistant, optimized for finding information in document
-collections. You will be provided with several pages from a document
-collection, and are expected to generate an answer based only on these pages,
-without using any prior knowledge.
-"""
-
 
 # Python 3.12 itertools provide this out of the box
 def batched(iterable, n):
@@ -44,37 +37,3 @@ def embed(strings):
                 yield embedding["embedding"]
         else:
             raise Exception(response.text)
-
-
-def complete(query, sources):
-    context = "\n\n".join(sources)
-    prompt = f"""
-    Context information is below.
-    ---------------------
-    {context}
-    ---------------------
-    Given the context information and not prior knowledge, answer the query.
-
-    Query: {query}
-    Answer: 
-    """
-
-    data = {
-        "model": "gpt-3.5-turbo",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    }
-
-    response = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=headers,
-        json=data,
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        raise Exception(response.text())
-
-    return response.json()["choices"][0]["message"]["content"]
