@@ -59,6 +59,7 @@ def ocrmypdf_process(input_file, output_file):
         # plugins=["insight_worker.plugin"],
         # Lossless optimization
         optimize=2,
+        invalidate_digital_signatures=True,
     )
 
 
