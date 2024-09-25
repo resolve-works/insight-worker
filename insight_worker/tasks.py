@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from multiprocessing import Process
 from tempfile import TemporaryDirectory
 from pathlib import Path
-from pikepdf import Pdf
+from pikepdf import Pdf, PdfError
 from itertools import chain
 from sqlalchemy import create_engine, select, delete, func
 from sqlalchemy.orm import Session
@@ -63,6 +63,33 @@ def ocrmypdf_process(input_file, output_file):
     )
 
 
+def get_pdf_pagecount(path):
+    with Pdf.open(path) as pdf:
+        return len(pdf.pages)
+
+
+def slice_pdf(path, from_page, to_page):
+    with Pdf.open(path) as pdf:
+        before_range = range(0, from_page)
+        after_range = range(to_page, len(pdf.pages))
+        pages_to_delete = list(chain(before_range, after_range))
+
+        # Split file from original if there's pages explicitely set
+        if len(pages_to_delete):
+            # Reverse the range to remove last page first as the file shrinks
+            # when removing pages, leading to IndexErrors otherwise
+            for p in reversed(pages_to_delete):
+                del pdf.pages[p]
+            pdf.save(path)
+
+
+def optimize_pdf(input_path, output_path):
+    # OCR & optimize new PDF
+    process = Process(target=ocrmypdf_process, args=(input_path, output_path))
+    process.start()
+    process.join()
+
+
 def ingest_file(id):
     logging.info(f"Ingesting file {id}")
     minio = get_minio()
@@ -79,49 +106,40 @@ def ingest_file(id):
 
         minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
-        # Analyze file, store meta
-        with Pdf.open(original_path) as file_pdf:
+        try:
+            # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
             if not inode.files.to_page:
-                inode.files.to_page = len(file_pdf.pages)
+                inode.files.to_page = get_pdf_pagecount(original_path)
 
-            before_range = range(0, inode.files.from_page)
-            after_range = range(inode.files.to_page, len(file_pdf.pages))
-            pages_to_delete = list(chain(before_range, after_range))
+            slice_pdf(original_path, inode.files.from_page, inode.files.to_page)
 
-            # Split file from original if there's pages explicitely set
-            if len(pages_to_delete):
-                # Reverse the range to remove last page first as the file shrinks
-                # when removing pages, leading to IndexErrors otherwise
-                for p in reversed(pages_to_delete):
-                    del file_pdf.pages[p]
-                file_pdf.save(original_path)
+            optimize_pdf(original_path, optimized_path)
 
-        # OCR & optimize new PDF
-        process = Process(target=ocrmypdf_process, args=(original_path, optimized_path))
-        process.start()
-        process.join()
-
-        minio.fput_object(
-            env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
-        )
-
-        # fitz is pyMuPDF used for extracting text layers
-        file_pdf = fitz.open(optimized_path)
-
-        pages = [
-            Pages(
-                # Get all contents, sorted by position on page
-                contents=page.get_text(sort=True).strip(),
-                # Index pages in file instead of in file
-                index=inode.files.from_page + index,
-                inode_id=inode.id,
+            minio.fput_object(
+                env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
             )
-            for index, page in enumerate(file_pdf)
-        ]
-        session.add_all(pages)
-        inode.files.is_ingested = True
-        session.commit()
-        # TODO - remove me
+
+            # fitz is pyMuPDF used for extracting text layers
+            file_pdf = fitz.open(optimized_path)
+
+            pages = [
+                Pages(
+                    # Get all contents, sorted by position on page
+                    contents=page.get_text(sort=True).strip(),
+                    # Index pages in file instead of in file
+                    index=inode.files.from_page + index,
+                    inode_id=inode.id,
+                )
+                for index, page in enumerate(file_pdf)
+            ]
+            session.add_all(pages)
+            inode.files.is_ingested = True
+        except PdfError as e:
+            # TODO - Set file error state
+            raise e
+        finally:
+            session.commit()
+
         return owner_id
 
 
@@ -192,7 +210,7 @@ def embed_file(id):
         return owner_id
 
 
-def delete_inode(id, channel):
+def delete_inode(id):
     logging.info(f"Deleting inode {id}")
     minio = get_minio()
 
