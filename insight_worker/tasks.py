@@ -2,6 +2,7 @@ import logging
 import ocrmypdf
 import fitz
 import json
+import magic
 from minio import Minio
 from minio.commonconfig import CopySource
 from minio.deleteobjects import DeleteObject
@@ -90,6 +91,10 @@ def optimize_pdf(input_path, output_path):
     process.join()
 
 
+class IngestException(Exception):
+    pass
+
+
 def ingest_file(id):
     logging.info(f"Ingesting file {id}")
     minio = get_minio()
@@ -107,37 +112,50 @@ def ingest_file(id):
         minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
 
         try:
-            # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
-            if not inode.files.to_page:
-                inode.files.to_page = get_pdf_pagecount(original_path)
+            try:
+                # Is file actually PDF?
+                mime = magic.from_file(original_path, mime=True)
+                if mime != "application/pdf":
+                    raise IngestException("unsupported_file_type")
 
-            slice_pdf(original_path, inode.files.from_page, inode.files.to_page)
+                # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
+                if not inode.files.to_page:
+                    inode.files.to_page = get_pdf_pagecount(original_path)
 
-            optimize_pdf(original_path, optimized_path)
+                slice_pdf(original_path, inode.files.from_page, inode.files.to_page)
 
-            minio.fput_object(
-                env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
-            )
+                # Trigger OCR & optimizations on sliced file
+                optimize_pdf(original_path, optimized_path)
 
-            # fitz is pyMuPDF used for extracting text layers
-            file_pdf = fitz.open(optimized_path)
-
-            pages = [
-                Pages(
-                    # Get all contents, sorted by position on page
-                    contents=page.get_text(sort=True).strip(),
-                    # Index pages in file instead of in file
-                    index=inode.files.from_page + index,
-                    inode_id=inode.id,
+                minio.fput_object(
+                    env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
                 )
-                for index, page in enumerate(file_pdf)
-            ]
-            session.add_all(pages)
-            inode.files.is_ingested = True
-        except PdfError as e:
-            # TODO - Set file error state
+
+                # fitz is pyMuPDF used for extracting text layers
+                file_pdf = fitz.open(optimized_path)
+
+                pages = [
+                    Pages(
+                        # Get all contents, sorted by position on page
+                        contents=page.get_text(sort=True).strip(),
+                        # Index pages in file instead of in file
+                        index=inode.files.from_page + index,
+                        inode_id=inode.id,
+                    )
+                    for index, page in enumerate(file_pdf)
+                ]
+                session.add_all(pages)
+            except PdfError as e:
+                # TODO - Set file error state
+                raise IngestException("corrupted_file")
+        except IngestException as e:
+            inode.error = str(e)
+            raise e
+        except Exception as e:
+            logging.error(f"Error occurred during ingest of {id}", e)
             raise e
         finally:
+            inode.files.is_ingested = True
             session.commit()
 
         return owner_id
@@ -190,6 +208,10 @@ def embed_file(id):
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
+
+        if inode.files.error is not None:
+            raise Exception("Cannot embed errored file")
+
         owner_id = inode.owner_id
         stmt = (
             select(Pages)

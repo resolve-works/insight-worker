@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Computed, DateTime, Double, Enum, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Computed, DateTime, Double, Enum, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Table, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import CITEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
@@ -9,6 +9,22 @@ import uuid
 
 class Base(DeclarativeBase):
     pass
+
+
+class Conversations(Base):
+    __tablename__ = 'conversations'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='conversations_pkey'),
+        {'schema': 'private'}
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+
+    inode: Mapped[List['Inodes']] = relationship('Inodes', secondary='private.conversations_inodes', back_populates='conversation')
+    prompts: Mapped[List['Prompts']] = relationship('Prompts', back_populates='conversation')
 
 
 class Inodes(Base):
@@ -32,28 +48,11 @@ class Inodes(Base):
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
 
+    conversation: Mapped[List['Conversations']] = relationship('Conversations', secondary='private.conversations_inodes', back_populates='inode')
     parent: Mapped['Inodes'] = relationship('Inodes', remote_side=[id], back_populates='parent_reverse')
     parent_reverse: Mapped[List['Inodes']] = relationship('Inodes', remote_side=[parent_id], back_populates='parent')
     files: Mapped['Files'] = relationship('Files', uselist=False, back_populates='inode')
     pages: Mapped[List['Pages']] = relationship('Pages', back_populates='inode')
-
-
-class Prompts(Base):
-    __tablename__ = 'prompts'
-    __table_args__ = (
-        PrimaryKeyConstraint('id', name='prompts_pkey'),
-        {'schema': 'private'}
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
-    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
-    query: Mapped[str] = mapped_column(Text)
-    similarity_top_k: Mapped[int] = mapped_column(Integer, server_default=text('3'))
-    response: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
-
-    sources: Mapped[List['Sources']] = relationship('Sources', back_populates='prompt')
 
 
 class SchemaMigrations(Base):
@@ -65,6 +64,17 @@ class SchemaMigrations(Base):
 
     version: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dirty: Mapped[bool] = mapped_column(Boolean)
+
+
+t_conversations_inodes = Table(
+    'conversations_inodes', Base.metadata,
+    Column('conversation_id', BigInteger, primary_key=True, nullable=False),
+    Column('inode_id', BigInteger, primary_key=True, nullable=False),
+    ForeignKeyConstraint(['conversation_id'], ['private.conversations.id'], ondelete='CASCADE', name='conversations_inodes_conversation_id_fkey'),
+    ForeignKeyConstraint(['inode_id'], ['private.inodes.id'], ondelete='CASCADE', name='conversations_inodes_inode_id_fkey'),
+    PrimaryKeyConstraint('conversation_id', 'inode_id', name='conversations_inodes_pkey'),
+    schema='private'
+)
 
 
 class Files(Base):
@@ -84,6 +94,7 @@ class Files(Base):
     inode_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     is_ready: Mapped[Optional[bool]] = mapped_column(Boolean, Computed('(is_uploaded AND is_ingested AND is_embedded)', persisted=True))
     to_page: Mapped[Optional[int]] = mapped_column(Integer)
+    error: Mapped[Optional[str]] = mapped_column(Enum('unsupported_file_type', 'corrupted_file', name='file_error'))
 
     inode: Mapped['Inodes'] = relationship('Inodes', back_populates='files')
 
@@ -105,6 +116,26 @@ class Pages(Base):
 
     inode: Mapped['Inodes'] = relationship('Inodes', back_populates='pages')
     sources: Mapped[List['Sources']] = relationship('Sources', back_populates='page')
+
+
+class Prompts(Base):
+    __tablename__ = 'prompts'
+    __table_args__ = (
+        ForeignKeyConstraint(['conversation_id'], ['private.conversations.id'], ondelete='CASCADE', name='prompts_conversation_id_fkey'),
+        PrimaryKeyConstraint('id', name='prompts_pkey'),
+        {'schema': 'private'}
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
+    query: Mapped[str] = mapped_column(Text)
+    conversation_id: Mapped[int] = mapped_column(BigInteger)
+    response: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    embedding: Mapped[Optional[Any]] = mapped_column(Vector(1536))
+
+    conversation: Mapped['Conversations'] = relationship('Conversations', back_populates='prompts')
+    sources: Mapped[List['Sources']] = relationship('Sources', back_populates='prompt')
 
 
 class Sources(Base):

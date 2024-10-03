@@ -1,6 +1,6 @@
 FROM jbarlow83/ocrmypdf
 
-RUN apt update && apt install -y tesseract-ocr-nld
+RUN apt update && apt install -y tesseract-ocr-nld libmagic1
 
 COPY . /home/insight
 WORKDIR /home/insight
