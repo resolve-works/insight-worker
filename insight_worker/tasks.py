@@ -95,7 +95,7 @@ class IngestException(Exception):
     pass
 
 
-def ingest_file(id):
+def ingest_file(id, channel):
     logging.info(f"Ingesting file {id}")
     minio = get_minio()
 
@@ -146,22 +146,34 @@ def ingest_file(id):
                 ]
                 session.add_all(pages)
             except PdfError as e:
-                # TODO - Set file error state
                 raise IngestException("corrupted_file")
+
+            # Trigger next tasks
+            if channel:
+                for routing_key in ["index_inode", "embed_file"]:
+                    channel.basic_publish(
+                        exchange="insight",
+                        routing_key=routing_key,
+                        body=json.dumps({"id": str(id)}),
+                    )
+
         except IngestException as e:
-            inode.error = str(e)
-            raise e
+            inode.files.error = str(e)
         except Exception as e:
             logging.error(f"Error occurred during ingest of {id}", e)
-            raise e
         finally:
             inode.files.is_ingested = True
             session.commit()
 
-        return owner_id
+            if channel:
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=f"user-{owner_id}",
+                    body=json.dumps({"id": str(id), "task": "ingest_file"}),
+                )
 
 
-def index_inode(id):
+def index_inode(id, channel):
     logging.info(f"Indexing inode {id}")
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
@@ -200,10 +212,16 @@ def index_inode(id):
 
         inode.is_indexed = True
         session.commit()
-        return owner_id
+
+        if channel:
+            channel.basic_publish(
+                exchange="",
+                routing_key=f"user-{owner_id}",
+                body=json.dumps({"id": str(id), "task": "index_inode"}),
+            )
 
 
-def embed_file(id):
+def embed_file(id, channel):
     logging.info(f"Embedding file {id}")
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
@@ -229,10 +247,16 @@ def embed_file(id):
 
         inode.files.is_embedded = True
         session.commit()
-        return owner_id
+
+        if channel:
+            channel.basic_publish(
+                exchange="",
+                routing_key=f"user-{owner_id}",
+                body=json.dumps({"id": str(id), "task": "embed_file"}),
+            )
 
 
-def delete_inode(id):
+def delete_inode(id, channel):
     logging.info(f"Deleting inode {id}")
     minio = get_minio()
 
@@ -342,19 +366,20 @@ def move_inode(id, channel):
         inode.path = path
         session.commit()
 
-        # reindex
-        channel.basic_publish(
-            exchange="insight",
-            routing_key="index_inode",
-            body=json.dumps({"id": inode.id}),
-        )
-
-        # Trigger move of children
-        stmt = select(Inodes).where(Inodes.parent_id == inode.id)
-        children = session.scalars(stmt).all()
-        for inode in children:
+        if channel:
+            # reindex
             channel.basic_publish(
                 exchange="insight",
-                routing_key="move_inode",
+                routing_key="index_inode",
                 body=json.dumps({"id": inode.id}),
             )
+
+            # Trigger move of children
+            stmt = select(Inodes).where(Inodes.parent_id == inode.id)
+            children = session.scalars(stmt).all()
+            for inode in children:
+                channel.basic_publish(
+                    exchange="insight",
+                    routing_key="move_inode",
+                    body=json.dumps({"id": inode.id}),
+                )

@@ -64,39 +64,13 @@ def on_message(channel, method_frame, header_frame, body):
     try:
         match method_frame.routing_key:
             case "ingest_file":
-                # Ingest file can error on corrupt/invalid files
-                try:
-                    owner_id = ingest_file(id)
-                    # Trigger next tasks
-                    for routing_key in ["index_inode", "embed_file"]:
-                        channel.basic_publish(
-                            exchange="insight",
-                            routing_key=routing_key,
-                            body=json.dumps({"id": str(id)}),
-                        )
-                finally:
-                    # Always let user know task finished
-                    channel.basic_publish(
-                        exchange="",
-                        routing_key=f"user-{owner_id}",
-                        body=json.dumps({"id": str(id), "task": "ingest_file"}),
-                    )
+                ingest_file(id, channel)
             case "index_inode":
-                owner_id = index_inode(id)
-                channel.basic_publish(
-                    exchange="",
-                    routing_key=f"user-{owner_id}",
-                    body=json.dumps({"id": str(id), "task": "index_inode"}),
-                )
+                index_inode(id, channel)
             case "embed_file":
-                owner_id = embed_file(id)
-                channel.basic_publish(
-                    exchange="",
-                    routing_key=f"user-{owner_id}",
-                    body=json.dumps({"id": str(id), "task": "embed_file"}),
-                )
+                embed_file(id, channel)
             case "delete_inode":
-                delete_inode(id)
+                delete_inode(id, channel)
             case "move_inode":
                 move_inode(id, channel)
             case _:
