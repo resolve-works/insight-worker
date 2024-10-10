@@ -95,7 +95,7 @@ class IngestException(Exception):
     pass
 
 
-def ingest_file(id, channel):
+def ingest_file(id, channel=None):
     logging.info(f"Ingesting file {id}")
     minio = get_minio()
 
@@ -173,7 +173,7 @@ def ingest_file(id, channel):
                 )
 
 
-def index_inode(id, channel):
+def index_inode(id, channel=None):
     logging.info(f"Indexing inode {id}")
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
@@ -221,7 +221,7 @@ def index_inode(id, channel):
             )
 
 
-def embed_file(id, channel):
+def embed_file(id, channel=None):
     logging.info(f"Embedding file {id}")
     with Session(engine) as session:
         stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
@@ -256,7 +256,7 @@ def embed_file(id, channel):
             )
 
 
-def delete_inode(id, channel):
+def delete_inode(id, channel=None):
     logging.info(f"Deleting inode {id}")
     minio = get_minio()
 
@@ -330,7 +330,7 @@ def delete_inode(id, channel):
         session.commit()
 
 
-def move_inode(id, channel):
+def move_inode(id, channel=None):
     logging.info(f"Moving inode {id}")
     minio = get_minio()
 
