@@ -1,10 +1,12 @@
 FROM jbarlow83/ocrmypdf
 
-RUN apt update && apt install -y tesseract-ocr-nld libmagic1
+# TODO - move the building / installing to builder step
+
+RUN apt update && apt install -y tesseract-ocr-nld libmagic1 python3-pip
 
 COPY . /home/insight
 WORKDIR /home/insight
-RUN pip install .
+RUN pip install . --break-system-packages
 RUN rm -rf /home/insight
 
 WORKDIR /home

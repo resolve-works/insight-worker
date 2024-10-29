@@ -340,31 +340,33 @@ def move_inode(id, channel=None):
         stmt = select(func.inode_path(Inodes.id)).where(Inodes.id == inode.id)
         path = session.scalars(stmt).one()
 
-        # Move in storage backend if this is a file
-        try:
-            # This will error when no file is found
-            stmt = select(Files).where(Files.inode_id == inode.id)
-            session.scalars(stmt).one()
+        # If paths didn't change, we don't have to update the storage backend
+        if path != inode.path:
+            # Move in storage backend if this is a file
+            try:
+                # This will error when no file is found
+                stmt = select(Files).where(Files.inode_id == inode.id)
+                session.scalars(stmt).one()
 
-            # Move both files
-            for file in ["original", "optimized"]:
-                new_path = inode_path(inode.owner_id, path) + f"/{file}"
-                old_path = inode_path(inode.owner_id, inode.path) + f"/{file}"
+                # Move both files
+                for file in ["original", "optimized"]:
+                    new_path = inode_path(inode.owner_id, path) + f"/{file}"
+                    old_path = inode_path(inode.owner_id, inode.path) + f"/{file}"
 
-                # TODO - Proper error handling of storage failing
-                minio.copy_object(
-                    env.get("STORAGE_BUCKET"),
-                    new_path,
-                    CopySource(env.get("STORAGE_BUCKET"), old_path),
-                )
+                    # TODO - Proper error handling of storage failing
+                    minio.copy_object(
+                        env.get("STORAGE_BUCKET"),
+                        new_path,
+                        CopySource(env.get("STORAGE_BUCKET"), old_path),
+                    )
 
-                minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
-        except NoResultFound:
-            pass
+                    minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
+            except NoResultFound:
+                pass
 
-        # Move succesful, save new path
-        inode.path = path
-        session.commit()
+            # Move succesful, save new path
+            inode.path = path
+            session.commit()
 
         if channel:
             # reindex
