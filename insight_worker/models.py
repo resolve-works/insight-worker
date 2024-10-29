@@ -1,7 +1,7 @@
 from typing import Any, List, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Computed, DateTime, Double, Enum, ForeignKeyConstraint, Identity, Integer, PrimaryKeyConstraint, Table, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Computed, DateTime, Double, Enum, ForeignKeyConstraint, Identity, Index, Integer, PrimaryKeyConstraint, Table, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import CITEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 import datetime
@@ -15,6 +15,7 @@ class Conversations(Base):
     __tablename__ = 'conversations'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='conversations_pkey'),
+        Index('conversations_created_at_idx', 'created_at'),
         {'schema': 'private'}
     )
 
@@ -22,6 +23,7 @@ class Conversations(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    error: Mapped[Optional[str]] = mapped_column(Enum('completion_context_exceeded', name='conversation_error'))
 
     inode: Mapped[List['Inodes']] = relationship('Inodes', secondary='private.conversations_inodes', back_populates='conversation')
     prompts: Mapped[List['Prompts']] = relationship('Prompts', back_populates='conversation')
@@ -34,6 +36,8 @@ class Inodes(Base):
         ForeignKeyConstraint(['parent_id'], ['private.inodes.id'], ondelete='CASCADE', name='inodes_parent_id_fkey'),
         PrimaryKeyConstraint('id', name='inodes_pkey'),
         UniqueConstraint('owner_id', 'path', name='inodes_owner_id_path_key'),
+        Index('inodes_created_at_idx', 'created_at'),
+        Index('inodes_type_idx', 'type'),
         {'schema': 'private'}
     )
 
@@ -44,6 +48,7 @@ class Inodes(Base):
     path: Mapped[str] = mapped_column(CITEXT)
     is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     is_indexed: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_public: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     parent_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
@@ -123,6 +128,7 @@ class Prompts(Base):
     __table_args__ = (
         ForeignKeyConstraint(['conversation_id'], ['private.conversations.id'], ondelete='CASCADE', name='prompts_conversation_id_fkey'),
         PrimaryKeyConstraint('id', name='prompts_pkey'),
+        Index('prompts_created_at_idx', 'created_at'),
         {'schema': 'private'}
     )
 
@@ -133,6 +139,7 @@ class Prompts(Base):
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     embedding: Mapped[Optional[Any]] = mapped_column(Vector(1536))
+    error: Mapped[Optional[str]] = mapped_column(Enum('embed_context_exceeded', name='prompt_error'))
 
     conversation: Mapped['Conversations'] = relationship('Conversations', back_populates='prompts')
     sources: Mapped[List['Sources']] = relationship('Sources', back_populates='prompt')

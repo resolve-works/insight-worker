@@ -23,7 +23,9 @@ from .rag import embed
 
 logging.basicConfig(level=logging.INFO)
 
-engine = create_engine(env.get("POSTGRES_URI"))
+engine = create_engine(
+    env.get("POSTGRES_URI"), connect_args={"options": "-csearch_path=private,public"}
+)
 
 
 def inode_path(owner_id, path):
@@ -330,8 +332,8 @@ def delete_inode(id, channel=None):
         session.commit()
 
 
-def move_inode(id, channel=None):
-    logging.info(f"Moving inode {id}")
+def update_inode(id, channel=None):
+    logging.info(f"Updating inode {id}")
     minio = get_minio()
 
     with Session(engine) as session:
@@ -382,6 +384,6 @@ def move_inode(id, channel=None):
             for inode in children:
                 channel.basic_publish(
                     exchange="insight",
-                    routing_key="move_inode",
+                    routing_key="update_inode",
                     body=json.dumps({"id": inode.id}),
                 )
