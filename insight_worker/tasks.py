@@ -198,6 +198,7 @@ def index_inode(id, channel=None):
                 "folder": str(Path(inode.path).parent),
                 "filename": inode.name,
                 "owner_id": str(owner_id),
+                "is_public": inode.is_public,
                 "readable_by": [str(owner_id)],
                 "pages": [
                     {
@@ -378,12 +379,34 @@ def update_inode(id, channel=None):
                 body=json.dumps({"id": inode.id}),
             )
 
-            # Trigger move of children
+            # When is_public is updated, parents get updated in postgres
+            # triggers. Trigger index of ancestors
+            hierarchy = (
+                select(Inodes.id, Inodes.parent_id)
+                .where(Inodes.id == inode.parent_id)
+                .cte(name="hierarchy", recursive=True)
+            )
+            hierarchy = hierarchy.union_all(
+                select(Inodes.id, Inodes.parent_id).join(
+                    hierarchy, Inodes.id == hierarchy.c.parent_id
+                )
+            )
+            stmt = select(Inodes).join(hierarchy, Inodes.id == hierarchy.c.id)
+            ancestors = session.scalars(stmt).all()
+
+            for parent in ancestors:
+                channel.basic_publish(
+                    exchange="insight",
+                    routing_key="index_inode",
+                    body=json.dumps({"id": parent.id}),
+                )
+
+            # Trigger update of children
             stmt = select(Inodes).where(Inodes.parent_id == inode.id)
             children = session.scalars(stmt).all()
-            for inode in children:
+            for child in children:
                 channel.basic_publish(
                     exchange="insight",
                     routing_key="update_inode",
-                    body=json.dumps({"id": inode.id}),
+                    body=json.dumps({"id": child.id}),
                 )
