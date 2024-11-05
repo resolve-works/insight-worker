@@ -46,17 +46,22 @@ class Inodes(Base):
     type: Mapped[str] = mapped_column(Enum('folder', 'file', name='inode_type'), server_default=text("'folder'::inode_type"))
     name: Mapped[str] = mapped_column(Text)
     path: Mapped[str] = mapped_column(CITEXT)
-    is_deleted: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     is_indexed: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     is_public: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_uploaded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
+    from_page: Mapped[int] = mapped_column(Integer, server_default=text('0'))
     parent_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
+    is_ready: Mapped[Optional[bool]] = mapped_column(Boolean, Computed('(is_indexed AND is_uploaded AND is_ingested AND is_embedded)', persisted=True))
+    to_page: Mapped[Optional[int]] = mapped_column(Integer)
+    error: Mapped[Optional[str]] = mapped_column(Enum('unsupported_file_type', 'corrupted_file', name='file_error'))
 
     conversation: Mapped[List['Conversations']] = relationship('Conversations', secondary='private.conversations_inodes', back_populates='inode')
     parent: Mapped['Inodes'] = relationship('Inodes', remote_side=[id], back_populates='parent_reverse')
     parent_reverse: Mapped[List['Inodes']] = relationship('Inodes', remote_side=[parent_id], back_populates='parent')
-    files: Mapped['Files'] = relationship('Files', uselist=False, back_populates='inode')
     pages: Mapped[List['Pages']] = relationship('Pages', back_populates='inode')
 
 
@@ -80,28 +85,6 @@ t_conversations_inodes = Table(
     PrimaryKeyConstraint('conversation_id', 'inode_id', name='conversations_inodes_pkey'),
     schema='private'
 )
-
-
-class Files(Base):
-    __tablename__ = 'files'
-    __table_args__ = (
-        ForeignKeyConstraint(['inode_id'], ['private.inodes.id'], ondelete='CASCADE', name='files_inode_id_fkey'),
-        PrimaryKeyConstraint('id', name='files_pkey'),
-        UniqueConstraint('inode_id', name='files_inode_id_key'),
-        {'schema': 'private'}
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True)
-    is_uploaded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
-    from_page: Mapped[int] = mapped_column(Integer, server_default=text('0'))
-    inode_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    is_ready: Mapped[Optional[bool]] = mapped_column(Boolean, Computed('(is_uploaded AND is_ingested AND is_embedded)', persisted=True))
-    to_page: Mapped[Optional[int]] = mapped_column(Integer)
-    error: Mapped[Optional[str]] = mapped_column(Enum('unsupported_file_type', 'corrupted_file', name='file_error'))
-
-    inode: Mapped['Inodes'] = relationship('Inodes', back_populates='files')
 
 
 class Pages(Base):

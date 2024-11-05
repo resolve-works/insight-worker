@@ -15,8 +15,7 @@ from pikepdf import Pdf, PdfError
 from itertools import chain
 from sqlalchemy import create_engine, select, delete, func
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import NoResultFound
-from .models import Files, Pages, Inodes
+from .models import Pages, Inodes
 from .opensearch import opensearch_request
 from .rag import embed
 
@@ -97,8 +96,8 @@ class IngestException(Exception):
     pass
 
 
-def ingest_file(id, channel=None):
-    logging.info(f"Ingesting file {id}")
+def ingest_inode(id, channel=None):
+    logging.info(f"Ingesting inode {id}")
     minio = get_minio()
 
     temp_path = Path(TemporaryDirectory().name)
@@ -106,7 +105,7 @@ def ingest_file(id, channel=None):
     optimized_path = temp_path / "optimized"
 
     with Session(engine) as session:
-        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
+        stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         owner_id = inode.owner_id
         path = inode_path(owner_id, inode.path)
@@ -121,10 +120,10 @@ def ingest_file(id, channel=None):
                     raise IngestException("unsupported_file_type")
 
                 # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
-                if not inode.files.to_page:
-                    inode.files.to_page = get_pdf_pagecount(original_path)
+                if not inode.to_page:
+                    inode.to_page = get_pdf_pagecount(original_path)
 
-                slice_pdf(original_path, inode.files.from_page, inode.files.to_page)
+                slice_pdf(original_path, inode.from_page, inode.to_page)
 
                 # Trigger OCR & optimizations on sliced file
                 optimize_pdf(original_path, optimized_path)
@@ -141,7 +140,7 @@ def ingest_file(id, channel=None):
                         # Get all contents, sorted by position on page
                         contents=page.get_text(sort=True).strip(),
                         # Index pages in file instead of in file
-                        index=inode.files.from_page + index,
+                        index=inode.from_page + index,
                         inode_id=inode.id,
                     )
                     for index, page in enumerate(file_pdf)
@@ -149,61 +148,48 @@ def ingest_file(id, channel=None):
                 session.add_all(pages)
             except PdfError as e:
                 raise IngestException("corrupted_file")
-
-            # Trigger next tasks
-            if channel:
-                for routing_key in ["index_inode", "embed_file"]:
-                    channel.basic_publish(
-                        exchange="insight",
-                        routing_key=routing_key,
-                        body=json.dumps({"id": str(id)}),
-                    )
-
         except IngestException as e:
-            inode.files.error = str(e)
+            inode.error = str(e)
         except Exception as e:
             logging.error(f"Error occurred during ingest of {id}", e)
         finally:
-            inode.files.is_ingested = True
+            inode.is_ingested = True
             session.commit()
 
             if channel:
                 channel.basic_publish(
                     exchange="",
                     routing_key=f"user-{owner_id}",
-                    body=json.dumps({"id": str(id), "task": "ingest_file"}),
+                    body=json.dumps({"id": str(id), "task": "ingest_inode"}),
                 )
 
 
-def index_inode(id, channel=None):
-    logging.info(f"Indexing inode {id}")
+def index_inode(data, channel=None):
+    logging.info(f"Indexing inode {data['id']}")
     with Session(engine) as session:
-        stmt = select(Inodes).where(Inodes.id == id)
-        inode = session.scalars(stmt).one()
-        owner_id = inode.owner_id
         stmt = (
             select(Pages)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.inode_id == inode.id)
+            .where(Pages.inode_id == data["id"])
         )
         pages = session.scalars(stmt).all()
 
         # Index file with pages and folder
         res = opensearch_request(
             "put",
-            f"/inodes/_doc/{str(inode.id)}",
+            f"/inodes/_doc/{data['id']}",
             {
-                "path": f"{inode.path}",
-                "type": inode.type,
-                "folder": str(Path(inode.path).parent),
-                "filename": inode.name,
-                "owner_id": str(owner_id),
-                "is_public": inode.is_public,
-                "readable_by": [str(owner_id)],
+                "path": f"{data['path']}",
+                "type": data["type"],
+                "folder": str(Path(data["path"]).parent),
+                "filename": data["name"],
+                "owner_id": data["owner_id"],
+                "is_public": data["is_public"],
+                "readable_by": [data["owner_id"]],
                 "pages": [
                     {
-                        "file_id": str(inode.id),
-                        "index": page.index - inode.files.from_page,
+                        "file_id": data["id"],
+                        "index": page.index - data["from_page"],
                         "contents": page.contents,
                     }
                     for page in pages
@@ -213,31 +199,33 @@ def index_inode(id, channel=None):
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
+        stmt = select(Inodes).where(Inodes.id == data["id"])
+        inode = session.scalars(stmt).one()
         inode.is_indexed = True
         session.commit()
 
         if channel:
             channel.basic_publish(
                 exchange="",
-                routing_key=f"user-{owner_id}",
-                body=json.dumps({"id": str(id), "task": "index_inode"}),
+                routing_key=f"user-{data['owner_id']}",
+                body=json.dumps({"id": data["id"], "task": "index_inode"}),
             )
 
 
-def embed_file(id, channel=None):
+def embed_inode(id, channel=None):
     logging.info(f"Embedding file {id}")
     with Session(engine) as session:
-        stmt = select(Inodes).join(Inodes.files).where(Inodes.id == id)
+        stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
 
-        if inode.files.error is not None:
+        if inode.error is not None:
             raise Exception("Cannot embed errored file")
 
         owner_id = inode.owner_id
         stmt = (
             select(Pages)
-            .where(Pages.index >= inode.files.from_page)
-            .where(Pages.index < inode.files.to_page)
+            .where(Pages.index >= inode.from_page)
+            .where(Pages.index < inode.to_page)
             .where(Pages.embedding == None)
             .where(func.length(Pages.contents) > 0)
             .where(Pages.inode_id == inode.id)
@@ -248,92 +236,38 @@ def embed_file(id, channel=None):
         for embedding, page in zip(embeddings, pages):
             page.embedding = embedding
 
-        inode.files.is_embedded = True
+        inode.is_embedded = True
         session.commit()
 
         if channel:
             channel.basic_publish(
                 exchange="",
                 routing_key=f"user-{owner_id}",
-                body=json.dumps({"id": str(id), "task": "embed_file"}),
+                body=json.dumps({"id": str(id), "task": "embed_inode"}),
             )
 
 
-def delete_inode(id, channel=None):
-    logging.info(f"Deleting inode {id}")
+def delete_inode(data, channel=None):
+    logging.info(f"Deleting inode {data['id']}")
     minio = get_minio()
 
-    with Session(engine) as session:
-        # Select the paths for the given inode
-        stmt = select(Inodes).where(Inodes.id == id)
-        inode = session.scalars(stmt).one()
+    # Make sure all original and optimized files are destroyed
+    path = inode_path(data["owner_id"], data["path"])
+    paths = [f"{path}/original", f"{path}/optimized"]
+    delete_objects = (DeleteObject(path) for tuple in paths for path in tuple)
 
-        # Select the paths of all this inodes descendants recursively
-        hierarchy = (
-            select(Inodes.id, Inodes.parent_id)
-            .where(Inodes.parent_id == inode.id)
-            .cte(name="hierarchy", recursive=True)
-        )
-        hierarchy = hierarchy.union_all(
-            select(Inodes.id, Inodes.parent_id).join(
-                hierarchy, Inodes.parent_id == hierarchy.c.id
-            )
-        )
-        stmt = (
-            # Only get inodes with an associated file to delete
-            select(Inodes)
-            .join(hierarchy, Inodes.id == hierarchy.c.id)
-            .join(Files, Inodes.id == Files.inode_id)
-        )
-        descendants = session.scalars(stmt).all()
+    errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
+    for error in errors:
+        logging.error("error occurred when deleting object", error)
 
-        # Make sure all original and optimized files are destroyed
-        paths = [inode_path(inode.owner_id, inode.path) for inode in descendants] + [
-            inode_path(inode.owner_id, inode.path)
-        ]
-        paths = [(f"{path}/original", f"{path}/optimized") for path in paths]
-        delete_objects = (DeleteObject(path) for tuple in paths for path in tuple)
-
-        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
-        for error in errors:
-            logging.error("error occurred when deleting object", error)
-
-        # Remove indexed contents of files that descend this inode
-        res = opensearch_request(
-            "post",
-            "/inodes/_delete_by_query",
-            {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {
-                                "wildcard": {
-                                    "path.keyword": {
-                                        "value": f"{inode.path}*",
-                                    }
-                                },
-                            },
-                            {
-                                "term": {
-                                    "owner_id.keyword": str(inode.owner_id),
-                                },
-                            },
-                        ]
-                    }
-                }
-            },
-        )
-        if res.status_code != 200:
-            # Record could be not found for whatever reason
-            data = res.json()
-            logging.error(data["error"]["reason"])
-
-        stmt = delete(Inodes).where(Inodes.id == inode.id)
-        session.execute(stmt)
-        session.commit()
+    # Remove indexed contents of files that descend this inode
+    res = opensearch_request("delete", f"/inodes/_doc/{data['id']}")
+    if res.status_code != 200:
+        # Record could be not found for whatever reason
+        logging.error(res.json())
 
 
-def update_inode(id, channel=None):
+def move_inode(id, channel=None):
     logging.info(f"Updating inode {id}")
     minio = get_minio()
 
@@ -346,11 +280,7 @@ def update_inode(id, channel=None):
         # If paths didn't change, we don't have to update the storage backend
         if path != inode.path:
             # Move in storage backend if this is a file
-            try:
-                # This will error when no file is found
-                stmt = select(Files).where(Files.inode_id == inode.id)
-                session.scalars(stmt).one()
-
+            if inode.type == "file":
                 # Move both files
                 for file in ["original", "optimized"]:
                     new_path = inode_path(inode.owner_id, path) + f"/{file}"
@@ -364,49 +294,7 @@ def update_inode(id, channel=None):
                     )
 
                     minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
-            except NoResultFound:
-                pass
 
             # Move succesful, save new path
             inode.path = path
             session.commit()
-
-        if channel:
-            # reindex
-            channel.basic_publish(
-                exchange="insight",
-                routing_key="index_inode",
-                body=json.dumps({"id": inode.id}),
-            )
-
-            # When is_public is updated, parents get updated in postgres
-            # triggers. Trigger index of ancestors
-            hierarchy = (
-                select(Inodes.id, Inodes.parent_id)
-                .where(Inodes.id == inode.parent_id)
-                .cte(name="hierarchy", recursive=True)
-            )
-            hierarchy = hierarchy.union_all(
-                select(Inodes.id, Inodes.parent_id).join(
-                    hierarchy, Inodes.id == hierarchy.c.parent_id
-                )
-            )
-            stmt = select(Inodes).join(hierarchy, Inodes.id == hierarchy.c.id)
-            ancestors = session.scalars(stmt).all()
-
-            for parent in ancestors:
-                channel.basic_publish(
-                    exchange="insight",
-                    routing_key="index_inode",
-                    body=json.dumps({"id": parent.id}),
-                )
-
-            # Trigger update of children
-            stmt = select(Inodes).where(Inodes.parent_id == inode.id)
-            children = session.scalars(stmt).all()
-            for child in children:
-                channel.basic_publish(
-                    exchange="insight",
-                    routing_key="update_inode",
-                    body=json.dumps({"id": child.id}),
-                )

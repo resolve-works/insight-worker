@@ -8,11 +8,11 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 from .models import Inodes
 from .tasks import (
-    ingest_file,
-    embed_file,
+    ingest_inode,
+    embed_inode,
     index_inode,
     delete_inode,
-    update_inode,
+    move_inode,
 )
 from .opensearch import opensearch_request
 
@@ -59,20 +59,20 @@ def configure_index():
 
 
 def on_message(channel, method_frame, header_frame, body):
-    id = json.loads(body)["id"]
+    body = json.loads(body)
 
     try:
         match method_frame.routing_key:
-            case "ingest_file":
-                ingest_file(id, channel)
+            case "ingest_inode":
+                ingest_inode(body["after"]["id"], channel)
+            case "embed_inode":
+                embed_inode(body["after"]["id"], channel)
             case "index_inode":
-                index_inode(id, channel)
-            case "embed_file":
-                embed_file(id, channel)
+                index_inode(body["after"], channel)
+            case "move_inode":
+                move_inode(body["after"]["id"], channel)
             case "delete_inode":
-                delete_inode(id, channel)
-            case "update_inode":
-                update_inode(id, channel)
+                delete_inode(body["before"], channel)
             case _:
                 raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
