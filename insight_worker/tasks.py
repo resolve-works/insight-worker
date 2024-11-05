@@ -157,6 +157,16 @@ def ingest_inode(id, channel=None):
             session.commit()
 
             if channel:
+                # After ingest, trigger index & embed
+                body = json.dumps({"after": {"id": id}})
+                channel.basic_publish(
+                    exchange="insight", routing_key="embed_inode", body=body
+                )
+                channel.basic_publish(
+                    exchange="insight", routing_key="index_inode", body=body
+                )
+
+                # Also notify user
                 channel.basic_publish(
                     exchange="",
                     routing_key=f"user-{owner_id}",
