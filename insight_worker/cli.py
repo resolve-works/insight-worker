@@ -68,7 +68,7 @@ def on_message(channel, method_frame, header_frame, body):
             case "embed_inode":
                 embed_inode(body["after"]["id"], channel)
             case "index_inode":
-                index_inode(body["after"], channel)
+                index_inode(body["after"]["id"], channel)
             case "move_inode":
                 move_inode(body["after"]["id"], channel)
             case "delete_inode":

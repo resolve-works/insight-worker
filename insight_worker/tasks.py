@@ -160,36 +160,38 @@ def ingest_inode(id, channel=None):
                 channel.basic_publish(
                     exchange="",
                     routing_key=f"user-{owner_id}",
-                    body=json.dumps({"id": str(id), "task": "ingest_inode"}),
+                    body=json.dumps({"id": id, "task": "ingest_inode"}),
                 )
 
 
-def index_inode(data, channel=None):
-    logging.info(f"Indexing inode {data['id']}")
+def index_inode(id, channel=None):
+    logging.info(f"Indexing inode {id}")
     with Session(engine) as session:
+        stmt = select(Inodes).where(Inodes.id == id)
+        inode = session.scalars(stmt).one()
+        owner_id = inode.owner_id
         stmt = (
             select(Pages)
             .where(func.length(Pages.contents) > 0)
-            .where(Pages.inode_id == data["id"])
+            .where(Pages.inode_id == inode.id)
         )
         pages = session.scalars(stmt).all()
 
         # Index file with pages and folder
         res = opensearch_request(
             "put",
-            f"/inodes/_doc/{data['id']}",
+            f"/inodes/_doc/{id}",
             {
-                "path": f"{data['path']}",
-                "type": data["type"],
-                "folder": str(Path(data["path"]).parent),
-                "filename": data["name"],
-                "owner_id": data["owner_id"],
-                "is_public": data["is_public"],
-                "readable_by": [data["owner_id"]],
+                "path": f"{inode.path}",
+                "type": inode.type,
+                "folder": str(Path(inode.path).parent),
+                "filename": inode.name,
+                "owner_id": str(owner_id),
+                "is_public": inode.is_public,
+                "readable_by": [str(owner_id)],
                 "pages": [
                     {
-                        "file_id": data["id"],
-                        "index": page.index - data["from_page"],
+                        "index": page.index - inode.from_page,
                         "contents": page.contents,
                     }
                     for page in pages
@@ -199,21 +201,19 @@ def index_inode(data, channel=None):
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
 
-        stmt = select(Inodes).where(Inodes.id == data["id"])
-        inode = session.scalars(stmt).one()
         inode.is_indexed = True
         session.commit()
 
         if channel:
             channel.basic_publish(
                 exchange="",
-                routing_key=f"user-{data['owner_id']}",
-                body=json.dumps({"id": data["id"], "task": "index_inode"}),
+                routing_key=f"user-{owner_id}",
+                body=json.dumps({"id": id, "task": "index_inode"}),
             )
 
 
 def embed_inode(id, channel=None):
-    logging.info(f"Embedding file {id}")
+    logging.info(f"Embedding inode {id}")
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
@@ -243,22 +243,23 @@ def embed_inode(id, channel=None):
             channel.basic_publish(
                 exchange="",
                 routing_key=f"user-{owner_id}",
-                body=json.dumps({"id": str(id), "task": "embed_inode"}),
+                body=json.dumps({"id": id, "task": "embed_inode"}),
             )
 
 
 def delete_inode(data, channel=None):
     logging.info(f"Deleting inode {data['id']}")
-    minio = get_minio()
 
     # Make sure all original and optimized files are destroyed
-    path = inode_path(data["owner_id"], data["path"])
-    paths = [f"{path}/original", f"{path}/optimized"]
-    delete_objects = (DeleteObject(path) for tuple in paths for path in tuple)
+    if data["type"] == "file":
+        minio = get_minio()
+        path = inode_path(data["owner_id"], data["path"])
+        paths = [f"{path}/original", f"{path}/optimized"]
+        delete_objects = (DeleteObject(path) for path in paths)
 
-    errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
-    for error in errors:
-        logging.error("error occurred when deleting object", error)
+        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
+        for error in errors:
+            logging.error(f"error occurred when deleting object", error)
 
     # Remove indexed contents of files that descend this inode
     res = opensearch_request("delete", f"/inodes/_doc/{data['id']}")
