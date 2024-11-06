@@ -4,7 +4,7 @@ import fitz
 import json
 import magic
 from minio import Minio
-from minio.commonconfig import CopySource
+from minio.commonconfig import CopySource, Tags
 from minio.deleteobjects import DeleteObject
 from os import environ as env
 from urllib.parse import urlparse
@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from pikepdf import Pdf, PdfError
 from itertools import chain
-from sqlalchemy import create_engine, select, delete, func
+from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 from .models import Pages, Inodes
 from .opensearch import opensearch_request
@@ -27,6 +27,8 @@ engine = create_engine(
 )
 
 
+# This should probably live in the models. Keeping it here allows us to
+# re-generate the models with sqlacodegen.
 def inode_path(owner_id, path):
     return f"users/{owner_id}{path}"
 
@@ -47,6 +49,8 @@ def ocrmypdf_process(input_file, output_file):
     ocrmypdf.ocr(
         input_file,
         output_file,
+        # Default is pdf-a, but the PDF/a spec for some reason does not support
+        # pdf alignment. PDFJS refuses to use range-requests on a pdf/a.
         output_type="pdf",
         language="nld",
         color_conversion_strategy="RGB",
@@ -96,6 +100,9 @@ class IngestException(Exception):
     pass
 
 
+# Generate a OCRd and optimized version of a uploaded PDF. The resulting PDF is
+# optimized for "fast web view", meaning it is linearized, allowing us to load
+# only parts of it
 def ingest_inode(id, channel=None):
     logging.info(f"Ingesting inode {id}")
     minio = get_minio()
@@ -174,6 +181,7 @@ def ingest_inode(id, channel=None):
                 )
 
 
+# Index inode into opensearch
 def index_inode(id, channel=None):
     logging.info(f"Indexing inode {id}")
     with Session(engine) as session:
@@ -222,6 +230,7 @@ def index_inode(id, channel=None):
             )
 
 
+# Generate embeddings for inode pages
 def embed_inode(id, channel=None):
     logging.info(f"Embedding inode {id}")
     with Session(engine) as session:
@@ -257,30 +266,9 @@ def embed_inode(id, channel=None):
             )
 
 
-def delete_inode(data, channel=None):
-    logging.info(f"Deleting inode {data['id']}")
-
-    # Make sure all original and optimized files are destroyed
-    if data["type"] == "file":
-        minio = get_minio()
-        path = inode_path(data["owner_id"], data["path"])
-        paths = [f"{path}/original", f"{path}/optimized"]
-        delete_objects = (DeleteObject(path) for path in paths)
-
-        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
-        for error in errors:
-            logging.error(f"error occurred when deleting object", error)
-
-    # Remove indexed contents of files that descend this inode
-    res = opensearch_request("delete", f"/inodes/_doc/{data['id']}")
-    if res.status_code != 200:
-        # Record could be not found for whatever reason
-        logging.error(res.json())
-
-
+# Move file in object storage
 def move_inode(id, channel=None):
     logging.info(f"Moving inode {id}")
-    minio = get_minio()
 
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
@@ -292,6 +280,8 @@ def move_inode(id, channel=None):
         if path != inode.path:
             # Move in storage backend if this is a file
             if inode.type == "file":
+                minio = get_minio()
+
                 # Move both files
                 for file in ["original", "optimized"]:
                     new_path = inode_path(inode.owner_id, path) + f"/{file}"
@@ -316,3 +306,48 @@ def move_inode(id, channel=None):
             channel.basic_publish(
                 exchange="insight", routing_key="index_inode", body=body
             )
+
+
+# Make file accessible for non-owners on inode share
+def share_inode(id, channel=None):
+    with Session(engine) as session:
+        stmt = select(Inodes).where(Inodes.id == id)
+        inode = session.scalars(stmt).one()
+
+        # For public files we use object tags to allow users access
+        if inode.type == "file":
+            minio = get_minio()
+
+            tags = Tags.new_object_tags()
+            tags["is_public"] = str(inode.is_public)
+            minio.set_object_tags(
+                env.get("STORAGE_BUCKET"), inode_path(inode.owner_id, inode.path), tags
+            )
+
+            # TODO - for user/group shares we can use IAM policies
+
+    # Re-index this inode to change share status in opensearch to
+    body = json.dumps({"after": {"id": id}})
+    channel.basic_publish(exchange="insight", routing_key="index_inode", body=body)
+
+
+# Remove files from object storage on inode deletion
+def delete_inode(data, channel=None):
+    logging.info(f"Deleting inode {data['id']}")
+
+    # Make sure all original and optimized files are destroyed
+    if data["type"] == "file":
+        minio = get_minio()
+        path = inode_path(data["owner_id"], data["path"])
+        paths = [f"{path}/original", f"{path}/optimized"]
+        delete_objects = (DeleteObject(path) for path in paths)
+
+        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
+        for error in errors:
+            logging.error(f"error occurred when deleting object", error)
+
+    # Remove indexed contents of files that descend this inode
+    res = opensearch_request("delete", f"/inodes/_doc/{data['id']}")
+    if res.status_code != 200:
+        # Record could be not found for whatever reason
+        logging.error(res.json())

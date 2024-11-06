@@ -11,8 +11,9 @@ from .tasks import (
     ingest_inode,
     embed_inode,
     index_inode,
-    delete_inode,
     move_inode,
+    share_inode,
+    delete_inode,
 )
 from .opensearch import opensearch_request
 
@@ -71,6 +72,8 @@ def on_message(channel, method_frame, header_frame, body):
                 index_inode(body["after"]["id"], channel)
             case "move_inode":
                 move_inode(body["after"]["id"], channel)
+            case "share_inode":
+                share_inode(body["after"]["id"], channel)
             case "delete_inode":
                 delete_inode(body["before"], channel)
             case _:
