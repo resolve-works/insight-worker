@@ -279,7 +279,7 @@ def delete_inode(data, channel=None):
 
 
 def move_inode(id, channel=None):
-    logging.info(f"Updating inode {id}")
+    logging.info(f"Moving inode {id}")
     minio = get_minio()
 
     with Session(engine) as session:
@@ -308,4 +308,11 @@ def move_inode(id, channel=None):
 
             # Move succesful, save new path
             inode.path = path
+            inode.should_move = False
             session.commit()
+
+            # After update, re-index
+            body = json.dumps({"after": {"id": id}})
+            channel.basic_publish(
+                exchange="insight", routing_key="index_inode", body=body
+            )

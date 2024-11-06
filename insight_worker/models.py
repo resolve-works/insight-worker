@@ -52,6 +52,7 @@ class Inodes(Base):
     is_ingested: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     is_embedded: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     from_page: Mapped[int] = mapped_column(Integer, server_default=text('0'))
+    should_move: Mapped[bool] = mapped_column(Boolean, server_default=text('false'))
     parent_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     created_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
