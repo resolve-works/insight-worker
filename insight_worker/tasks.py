@@ -310,6 +310,8 @@ def move_inode(id, channel=None):
 
 # Make file accessible for non-owners on inode share
 def share_inode(id, channel=None):
+    logging.info(f"Sharing inode {id}")
+
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
@@ -318,11 +320,12 @@ def share_inode(id, channel=None):
         if inode.type == "file":
             minio = get_minio()
 
-            tags = Tags.new_object_tags()
-            tags["is_public"] = str(inode.is_public)
-            minio.set_object_tags(
-                env.get("STORAGE_BUCKET"), inode_path(inode.owner_id, inode.path), tags
-            )
+            path = inode_path(inode.owner_id, inode.path)
+            paths = [f"{path}/original", f"{path}/optimized"]
+            for path in paths:
+                tags = Tags.new_object_tags()
+                tags["is_public"] = str(inode.is_public)
+                minio.set_object_tags(env.get("STORAGE_BUCKET"), path, tags)
 
             # TODO - for user/group shares we can use IAM policies
 
