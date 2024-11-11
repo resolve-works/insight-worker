@@ -3,6 +3,7 @@ import ocrmypdf
 import fitz
 import json
 import magic
+import pika
 from minio import Minio
 from minio.commonconfig import CopySource, Tags
 from minio.deleteobjects import DeleteObject
@@ -167,10 +168,20 @@ def ingest_inode(id, channel=None):
                 # After ingest, trigger index & embed
                 body = json.dumps({"after": {"id": id}})
                 channel.basic_publish(
-                    exchange="insight", routing_key="embed_inode", body=body
+                    exchange="insight",
+                    routing_key="embed_inode",
+                    body=body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                    ),
                 )
                 channel.basic_publish(
-                    exchange="insight", routing_key="index_inode", body=body
+                    exchange="insight",
+                    routing_key="index_inode",
+                    body=body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                    ),
                 )
 
                 # Also notify user
@@ -304,7 +315,12 @@ def move_inode(id, channel=None):
             # After update, re-index
             body = json.dumps({"after": {"id": id}})
             channel.basic_publish(
-                exchange="insight", routing_key="index_inode", body=body
+                exchange="insight",
+                routing_key="index_inode",
+                body=body,
+                properties=pika.BasicProperties(
+                    delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                ),
             )
 
 
@@ -331,7 +347,14 @@ def share_inode(id, channel=None):
 
     # Re-index this inode to change share status in opensearch to
     body = json.dumps({"after": {"id": id}})
-    channel.basic_publish(exchange="insight", routing_key="index_inode", body=body)
+    channel.basic_publish(
+        exchange="insight",
+        routing_key="index_inode",
+        body=body,
+        properties=pika.BasicProperties(
+            delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+        ),
+    )
 
 
 # Remove files from object storage on inode deletion

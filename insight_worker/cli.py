@@ -86,6 +86,11 @@ def on_message(channel, method_frame, header_frame, body):
 
 
 def on_channel_open(channel):
+    # Prefetch is disabled because we send messages on the channel passed to
+    # the on_message handler. When prefetch is enabled, these messages will
+    # only be published after all prefetched messages have been acked.
+    # A better solution would be to use a seperate publish channel
+    channel.basic_qos(prefetch_count=1)
     channel.basic_consume(env.get("QUEUE"), on_message)
 
 
