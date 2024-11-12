@@ -186,8 +186,8 @@ def ingest_inode(id, channel=None):
 
                 # Also notify user
                 channel.basic_publish(
-                    exchange="",
-                    routing_key=f"user-{owner_id}",
+                    exchange="user",
+                    routing_key="public" if inode.is_public else f"user-{owner_id}",
                     body=json.dumps({"id": id, "task": "ingest_inode"}),
                 )
 
@@ -235,8 +235,8 @@ def index_inode(id, channel=None):
 
         if channel:
             channel.basic_publish(
-                exchange="",
-                routing_key=f"user-{owner_id}",
+                exchange="user",
+                routing_key="public" if inode.is_public else f"user-{owner_id}",
                 body=json.dumps({"id": id, "task": "index_inode"}),
             )
 
@@ -271,8 +271,8 @@ def embed_inode(id, channel=None):
 
         if channel:
             channel.basic_publish(
-                exchange="",
-                routing_key=f"user-{owner_id}",
+                exchange="user",
+                routing_key="public" if inode.is_public else f"user-{owner_id}",
                 body=json.dumps({"id": id, "task": "embed_inode"}),
             )
 
@@ -313,15 +313,16 @@ def move_inode(id, channel=None):
             session.commit()
 
             # After update, re-index
-            body = json.dumps({"after": {"id": id}})
-            channel.basic_publish(
-                exchange="insight",
-                routing_key="index_inode",
-                body=body,
-                properties=pika.BasicProperties(
-                    delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
-                ),
-            )
+            if channel:
+                body = json.dumps({"after": {"id": id}})
+                channel.basic_publish(
+                    exchange="insight",
+                    routing_key="index_inode",
+                    body=body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                    ),
+                )
 
 
 # Make file accessible for non-owners on inode share
@@ -345,16 +346,17 @@ def share_inode(id, channel=None):
 
             # TODO - for user/group shares we can use IAM policies
 
-    # Re-index this inode to change share status in opensearch to
-    body = json.dumps({"after": {"id": id}})
-    channel.basic_publish(
-        exchange="insight",
-        routing_key="index_inode",
-        body=body,
-        properties=pika.BasicProperties(
-            delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
-        ),
-    )
+    if channel:
+        # Re-index this inode to change share status in opensearch to
+        body = json.dumps({"after": {"id": id}})
+        channel.basic_publish(
+            exchange="insight",
+            routing_key="index_inode",
+            body=body,
+            properties=pika.BasicProperties(
+                delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+            ),
+        )
 
 
 # Remove files from object storage on inode deletion
