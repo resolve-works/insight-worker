@@ -140,6 +140,14 @@ def ingest_inode(id, channel=None):
                     env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
                 )
 
+                # If this is a public inode, mark the optimized file also as a public file
+                if inode.is_public:
+                    tags = Tags.new_object_tags()
+                    tags["is_public"] = str(inode.is_public)
+                    minio.set_object_tags(
+                        env.get("STORAGE_BUCKET"), f"{path}/optimized", tags
+                    )
+
                 # fitz is pyMuPDF used for extracting text layers
                 file_pdf = fitz.open(optimized_path)
 
