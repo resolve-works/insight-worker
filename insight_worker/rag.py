@@ -23,7 +23,13 @@ def embed(strings):
         # Send tokens to external service instead of the whole text
         # https://community.openai.com/t/embedding-tokens-vs-embedding-strings
         data = {
-            "input": [encoding.encode(string) for string in batch],
+            # We split and join to remove all ocurrences of multiple whitespace
+            # characters in sequence.
+            # We slice by max length of embedding model here. Some files can
+            # contain posters at A0 format with font-size 11pt...
+            "input": [
+                encoding.encode(" ".join(string.split()))[:8192] for string in batch
+            ],
             "model": "text-embedding-3-small",
         }
         response = httpx.post(
