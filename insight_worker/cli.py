@@ -3,6 +3,7 @@ import logging
 import json
 import ssl
 from os import environ as env
+from minio.commonconfig import CopySource
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from .tasks import (
     delete_inode,
 )
 from .opensearch import opensearch_request
+from .tasks import get_minio, optimized_object_path, object_path
 
 logging.basicConfig(level=logging.INFO)
 
@@ -131,6 +133,47 @@ def rebuild_index():
 
         for inode_id in inodes:
             index_inode(inode_id)
+
+
+@cli.command()
+def update_inode_object_paths():
+    engine = create_engine(env.get("POSTGRES_URI"))
+    minio = get_minio()
+
+    with Session(engine) as session:
+        stmt = select(Inodes).where(Inodes.is_uploaded == True)
+        inodes = session.scalars(stmt).all()
+
+        for inode in inodes:
+            try:
+                old_path = f"{object_path(inode.owner_id, inode.path)}/original"
+                logging.info(f"Moving {old_path}")
+                source = CopySource(env.get("STORAGE_BUCKET"), old_path)
+                minio.copy_object(
+                    env.get("STORAGE_BUCKET"),
+                    object_path(inode.owner_id, inode.path),
+                    source,
+                )
+                minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
+            except Exception as e:
+                logging.error(e.message)
+
+        stmt = select(Inodes).where(Inodes.is_ingested == True)
+        inodes = session.scalars(stmt).all()
+
+        for inode in inodes:
+            try:
+                old_path = f"{object_path(inode.owner_id, inode.path)}/optimized"
+                logging.info(f"Moving {old_path}")
+                source = CopySource(env.get("STORAGE_BUCKET"), old_path)
+                minio.copy_object(
+                    env.get("STORAGE_BUCKET"),
+                    optimized_object_path(inode.owner_id, inode.path),
+                    source,
+                )
+                minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
+            except Exception as e:
+                logging.error(e.message)
 
 
 @cli.command()

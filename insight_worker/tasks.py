@@ -1,3 +1,4 @@
+import re
 import logging
 import ocrmypdf
 import fitz
@@ -30,8 +31,13 @@ engine = create_engine(
 
 # This should probably live in the models. Keeping it here allows us to
 # re-generate the models with sqlacodegen.
-def inode_path(owner_id, path):
+def object_path(owner_id, path):
     return f"users/{owner_id}{path}"
+
+
+def optimized_object_path(owner_id, path):
+    optimized_path = re.sub(r"(.+)(/[^/.]+)(\..+)$", r"\1\2_optimized\3", path)
+    return f"users/{owner_id}{optimized_path}"
 
 
 def get_minio():
@@ -115,10 +121,12 @@ def ingest_inode(id, channel=None):
     with Session(engine) as session:
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
-        owner_id = inode.owner_id
-        path = inode_path(owner_id, inode.path)
 
-        minio.fget_object(env.get("STORAGE_BUCKET"), f"{path}/original", original_path)
+        minio.fget_object(
+            env.get("STORAGE_BUCKET"),
+            object_path(inode.owner_id, inode.path),
+            original_path,
+        )
 
         try:
             try:
@@ -131,13 +139,13 @@ def ingest_inode(id, channel=None):
                 if not inode.to_page:
                     inode.to_page = get_pdf_pagecount(original_path)
 
+                # Slice file from original file, OCR & Optimize and upload
                 slice_pdf(original_path, inode.from_page, inode.to_page)
-
-                # Trigger OCR & optimizations on sliced file
                 optimize_pdf(original_path, optimized_path)
-
                 minio.fput_object(
-                    env.get("STORAGE_BUCKET"), f"{path}/optimized", optimized_path
+                    env.get("STORAGE_BUCKET"),
+                    optimized_object_path(inode.owner_id, inode.path),
+                    optimized_path,
                 )
 
                 # If this is a public inode, mark the optimized file also as a public file
@@ -145,7 +153,9 @@ def ingest_inode(id, channel=None):
                     tags = Tags.new_object_tags()
                     tags["is_public"] = str(inode.is_public)
                     minio.set_object_tags(
-                        env.get("STORAGE_BUCKET"), f"{path}/optimized", tags
+                        env.get("STORAGE_BUCKET"),
+                        optimized_object_path(inode.owner_id, inode.path),
+                        tags,
                     )
 
                 # fitz is pyMuPDF used for extracting text layers
@@ -195,7 +205,9 @@ def ingest_inode(id, channel=None):
                 # Also notify user
                 channel.basic_publish(
                     exchange="user",
-                    routing_key="public" if inode.is_public else f"user-{owner_id}",
+                    routing_key=(
+                        "public" if inode.is_public else f"user-{inode.owner_id}"
+                    ),
                     body=json.dumps({"id": id, "task": "ingest_inode"}),
                 )
 
@@ -293,7 +305,7 @@ def move_inode(id, channel=None):
         stmt = select(Inodes).where(Inodes.id == id)
         inode = session.scalars(stmt).one()
         stmt = select(func.inode_path(Inodes.id)).where(Inodes.id == inode.id)
-        path = session.scalars(stmt).one()
+        path = session.scalars(stmt).first()
 
         # If paths didn't change, we don't have to update the storage backend
         if path != inode.path:
@@ -301,11 +313,18 @@ def move_inode(id, channel=None):
             if inode.type == "file":
                 minio = get_minio()
 
-                # Move both files
-                for file in ["original", "optimized"]:
-                    new_path = inode_path(inode.owner_id, path) + f"/{file}"
-                    old_path = inode_path(inode.owner_id, inode.path) + f"/{file}"
+                paths = [
+                    (
+                        object_path(inode.owner_id, inode.path),
+                        object_path(inode.owner_id, path),
+                    ),
+                    (
+                        optimized_object_path(inode.owner_id, inode.path),
+                        optimized_object_path(inode.owner_id, path),
+                    ),
+                ]
 
+                for old_path, new_path in paths:
                     # TODO - Proper error handling of storage failing
                     minio.copy_object(
                         env.get("STORAGE_BUCKET"),
@@ -315,7 +334,7 @@ def move_inode(id, channel=None):
 
                     minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
 
-            # Move succesful, save new path
+            # Move succesful, save new path (object paths are inferred from path)
             inode.path = path
             inode.should_move = False
             session.commit()
@@ -345,9 +364,10 @@ def share_inode(id, channel=None):
         if inode.type == "file":
             minio = get_minio()
 
-            path = inode_path(inode.owner_id, inode.path)
-            paths = [f"{path}/original", f"{path}/optimized"]
-            for path in paths:
+            for path in [
+                object_path(inode.owner_id, inode.path),
+                optimized_object_path(inode.owner_id, inode.path),
+            ]:
                 tags = Tags.new_object_tags()
                 tags["is_public"] = str(inode.is_public)
                 minio.set_object_tags(env.get("STORAGE_BUCKET"), path, tags)
@@ -374,8 +394,10 @@ def delete_inode(data, channel=None):
     # Make sure all original and optimized files are destroyed
     if data["type"] == "file":
         minio = get_minio()
-        path = inode_path(data["owner_id"], data["path"])
-        paths = [f"{path}/original", f"{path}/optimized"]
+        paths = [
+            object_path(data["owner_id"], data["path"]),
+            optimized_object_path(data["owner_id"], data["path"]),
+        ]
         delete_objects = (DeleteObject(path) for path in paths)
 
         errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)

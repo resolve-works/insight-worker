@@ -11,9 +11,37 @@ class Base(DeclarativeBase):
     pass
 
 
+class SchemaMigrations(Base):
+    __tablename__ = 'schema_migrations'
+    __table_args__ = (
+        PrimaryKeyConstraint('version', name='schema_migrations_pkey'),
+        {'schema': 'private'}
+    )
+
+    version: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    dirty: Mapped[bool] = mapped_column(Boolean)
+
+
+class Users(Base):
+    __tablename__ = 'users'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='users_pkey'),
+        {'schema': 'private'}
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(Text)
+    email: Mapped[Optional[str]] = mapped_column(Text)
+    obfuscated_email: Mapped[Optional[str]] = mapped_column(Text, Computed("((regexp_replace(split_part(email, '@'::text, 1), '.'::text, '*'::text, 'g'::text) || '@'::text) || split_part(email, '@'::text, 2))", persisted=True))
+
+    conversations: Mapped[List['Conversations']] = relationship('Conversations', back_populates='owner')
+    inodes: Mapped[List['Inodes']] = relationship('Inodes', back_populates='owner')
+
+
 class Conversations(Base):
     __tablename__ = 'conversations'
     __table_args__ = (
+        ForeignKeyConstraint(['owner_id'], ['private.users.id'], name='conversations_owner_id_fkey'),
         PrimaryKeyConstraint('id', name='conversations_pkey'),
         Index('conversations_created_at_idx', 'created_at'),
         {'schema': 'private'}
@@ -25,6 +53,7 @@ class Conversations(Base):
     updated_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(True), server_default=text('CURRENT_TIMESTAMP'))
     error: Mapped[Optional[str]] = mapped_column(Enum('completion_context_exceeded', name='conversation_error'))
 
+    owner: Mapped['Users'] = relationship('Users', back_populates='conversations')
     inode: Mapped[List['Inodes']] = relationship('Inodes', secondary='private.conversations_inodes', back_populates='conversation')
     prompts: Mapped[List['Prompts']] = relationship('Prompts', back_populates='conversation')
 
@@ -33,6 +62,7 @@ class Inodes(Base):
     __tablename__ = 'inodes'
     __table_args__ = (
         CheckConstraint("TRIM(BOTH FROM name) <> ''::text", name='inodes_name_check'),
+        ForeignKeyConstraint(['owner_id'], ['private.users.id'], name='inodes_owner_id_fkey'),
         ForeignKeyConstraint(['parent_id'], ['private.inodes.id'], ondelete='CASCADE', name='inodes_parent_id_fkey'),
         PrimaryKeyConstraint('id', name='inodes_pkey'),
         UniqueConstraint('owner_id', 'path', name='inodes_owner_id_path_key'),
@@ -61,20 +91,10 @@ class Inodes(Base):
     error: Mapped[Optional[str]] = mapped_column(Enum('unsupported_file_type', 'corrupted_file', name='file_error'))
 
     conversation: Mapped[List['Conversations']] = relationship('Conversations', secondary='private.conversations_inodes', back_populates='inode')
+    owner: Mapped['Users'] = relationship('Users', back_populates='inodes')
     parent: Mapped['Inodes'] = relationship('Inodes', remote_side=[id], back_populates='parent_reverse')
     parent_reverse: Mapped[List['Inodes']] = relationship('Inodes', remote_side=[parent_id], back_populates='parent')
     pages: Mapped[List['Pages']] = relationship('Pages', back_populates='inode')
-
-
-class SchemaMigrations(Base):
-    __tablename__ = 'schema_migrations'
-    __table_args__ = (
-        PrimaryKeyConstraint('version', name='schema_migrations_pkey'),
-        {'schema': 'private'}
-    )
-
-    version: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    dirty: Mapped[bool] = mapped_column(Boolean)
 
 
 t_conversations_inodes = Table(
