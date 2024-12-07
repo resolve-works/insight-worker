@@ -5,6 +5,7 @@ import fitz
 import json
 import magic
 import pika
+import subprocess
 from minio import Minio
 from minio.commonconfig import CopySource, Tags
 from minio.deleteobjects import DeleteObject
@@ -49,6 +50,22 @@ def get_minio():
         secret_key=env.get("STORAGE_SECRET_KEY"),
         # Supplying random region to minio will allow us to not have to set GetBucketLocation
         region=env.get("STORAGE_REGION", "insight"),
+    )
+
+
+def repair_pdf(input_file, output_file):
+    subprocess.check_call(
+        [
+            "/usr/bin/gs",
+            "-q",
+            "-dSAFER",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-sDEVICE=pdfwrite",
+            "-o",
+            output_file,
+            input_file,
+        ]
     )
 
 
@@ -113,102 +130,106 @@ def ingest_inode(id, channel=None):
     logging.info(f"Ingesting inode {id}")
     minio = get_minio()
 
-    temp_path = Path(TemporaryDirectory().name)
-    original_path = temp_path / "original"
-    optimized_path = temp_path / "optimized"
+    with TemporaryDirectory() as dir:
+        temp_path = Path(dir)
+        original_path = temp_path / "original"
 
-    with Session(engine) as session:
-        stmt = select(Inodes).where(Inodes.id == id)
-        inode = session.scalars(stmt).one()
+        with Session(engine) as session:
+            stmt = select(Inodes).where(Inodes.id == id)
+            inode = session.scalars(stmt).one()
 
-        minio.fget_object(
-            env.get("STORAGE_BUCKET"),
-            object_path(inode.owner_id, inode.path),
-            original_path,
-        )
+            minio.fget_object(
+                env.get("STORAGE_BUCKET"),
+                object_path(inode.owner_id, inode.path),
+                original_path,
+            )
 
-        try:
             try:
-                # Is file actually PDF?
-                mime = magic.from_file(original_path, mime=True)
-                if mime != "application/pdf":
-                    raise IngestException("unsupported_file_type")
+                try:
+                    # Is file actually PDF?
+                    mime = magic.from_file(original_path, mime=True)
+                    if mime != "application/pdf":
+                        raise IngestException("unsupported_file_type")
 
-                # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
-                if not inode.to_page:
-                    inode.to_page = get_pdf_pagecount(original_path)
+                    repaired_path = temp_path / "repaired"
+                    optimized_path = temp_path / "optimized"
 
-                # Slice file from original file, OCR & Optimize and upload
-                slice_pdf(original_path, inode.from_page, inode.to_page)
-                optimize_pdf(original_path, optimized_path)
-                minio.fput_object(
-                    env.get("STORAGE_BUCKET"),
-                    optimized_object_path(inode.owner_id, inode.path),
-                    optimized_path,
-                )
+                    # User can supply to_page to slice PDF. When it's not set, slice till the end of pdf
+                    if not inode.to_page:
+                        inode.to_page = get_pdf_pagecount(original_path)
 
-                # If this is a public inode, mark the optimized file also as a public file
-                if inode.is_public:
-                    tags = Tags.new_object_tags()
-                    tags["is_public"] = str(inode.is_public)
-                    minio.set_object_tags(
+                    # Slice file from original file, OCR & Optimize and upload
+                    repair_pdf(original_path, repaired_path)
+                    slice_pdf(repaired_path, inode.from_page, inode.to_page)
+                    optimize_pdf(repaired_path, optimized_path)
+                    minio.fput_object(
                         env.get("STORAGE_BUCKET"),
                         optimized_object_path(inode.owner_id, inode.path),
-                        tags,
+                        optimized_path,
                     )
 
-                # fitz is pyMuPDF used for extracting text layers
-                file_pdf = fitz.open(optimized_path)
+                    # If this is a public inode, mark the optimized file also as a public file
+                    if inode.is_public:
+                        tags = Tags.new_object_tags()
+                        tags["is_public"] = str(inode.is_public)
+                        minio.set_object_tags(
+                            env.get("STORAGE_BUCKET"),
+                            optimized_object_path(inode.owner_id, inode.path),
+                            tags,
+                        )
 
-                pages = [
-                    Pages(
-                        # Get all contents, sorted by position on page
-                        contents=page.get_text(sort=True).strip(),
-                        # Index pages in file instead of in file
-                        index=inode.from_page + index,
-                        inode_id=inode.id,
+                    # fitz is pyMuPDF used for extracting text layers
+                    file_pdf = fitz.open(optimized_path)
+
+                    pages = [
+                        Pages(
+                            # Get all contents, sorted by position on page
+                            contents=page.get_text(sort=True).strip(),
+                            # Index pages in file instead of in file
+                            index=inode.from_page + index,
+                            inode_id=inode.id,
+                        )
+                        for index, page in enumerate(file_pdf)
+                    ]
+                    session.add_all(pages)
+                except PdfError as e:
+                    raise IngestException("corrupted_file")
+            except IngestException as e:
+                inode.error = str(e)
+            except Exception as e:
+                logging.error(f"Error occurred during ingest of {id}", e)
+            finally:
+                inode.is_ingested = True
+                session.commit()
+
+                if channel:
+                    # After ingest, trigger index & embed
+                    body = json.dumps({"after": {"id": id}})
+                    channel.basic_publish(
+                        exchange="insight",
+                        routing_key="embed_inode",
+                        body=body,
+                        properties=pika.BasicProperties(
+                            delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                        ),
                     )
-                    for index, page in enumerate(file_pdf)
-                ]
-                session.add_all(pages)
-            except PdfError as e:
-                raise IngestException("corrupted_file")
-        except IngestException as e:
-            inode.error = str(e)
-        except Exception as e:
-            logging.error(f"Error occurred during ingest of {id}", e)
-        finally:
-            inode.is_ingested = True
-            session.commit()
+                    channel.basic_publish(
+                        exchange="insight",
+                        routing_key="index_inode",
+                        body=body,
+                        properties=pika.BasicProperties(
+                            delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
+                        ),
+                    )
 
-            if channel:
-                # After ingest, trigger index & embed
-                body = json.dumps({"after": {"id": id}})
-                channel.basic_publish(
-                    exchange="insight",
-                    routing_key="embed_inode",
-                    body=body,
-                    properties=pika.BasicProperties(
-                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
-                    ),
-                )
-                channel.basic_publish(
-                    exchange="insight",
-                    routing_key="index_inode",
-                    body=body,
-                    properties=pika.BasicProperties(
-                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE,
-                    ),
-                )
-
-                # Also notify user
-                channel.basic_publish(
-                    exchange="user",
-                    routing_key=(
-                        "public" if inode.is_public else f"user-{inode.owner_id}"
-                    ),
-                    body=json.dumps({"id": id, "task": "ingest_inode"}),
-                )
+                    # Also notify user
+                    channel.basic_publish(
+                        exchange="user",
+                        routing_key=(
+                            "public" if inode.is_public else f"user-{inode.owner_id}"
+                        ),
+                        body=json.dumps({"id": id, "task": "ingest_inode"}),
+                    )
 
 
 # Index inode into opensearch
