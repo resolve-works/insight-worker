@@ -59,7 +59,6 @@ def ocrmypdf_process(input_file, output_file):
         # Default is pdf-a, but the PDF/a spec for some reason does not support
         # pdf alignment. PDFJS refuses to use range-requests on a pdf/a.
         output_type="pdf",
-        language="nld",
         color_conversion_strategy="RGB",
         progress_bar=False,
         # https://github.com/ocrmypdf/OCRmyPDF/issues/1162
