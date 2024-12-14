@@ -39,7 +39,15 @@ def configure_index():
         },
         "mappings": {
             "properties": {
-                "pages": {"type": "nested"},
+                "pages": {
+                    "type": "nested",
+                    "properties": {
+                        "contents": {
+                            "type": "text",
+                            "term_vector": "with_positions_offsets",
+                        },
+                    },
+                },
                 "folder": {
                     "type": "text",
                     "analyzer": "path_analyzer",
