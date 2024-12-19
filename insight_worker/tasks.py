@@ -222,14 +222,21 @@ def ingest_inode(id, channel=None):
                         ),
                     )
 
-                    # Also notify user
-                    channel.basic_publish(
-                        exchange="user",
-                        routing_key=(
-                            "public" if inode.is_public else f"user-{inode.owner_id}"
-                        ),
-                        body=json.dumps({"id": id, "task": "ingest_inode"}),
-                    )
+                    # Notify user when this inode had meaningful status changes
+                    stmt = select(Inodes).where(Inodes.id == id)
+                    inode = session.scalars(stmt).one()
+
+                    if inode.is_ready or inode.error:
+                        # Also notify user
+                        channel.basic_publish(
+                            exchange="user",
+                            routing_key=(
+                                "public"
+                                if inode.is_public
+                                else f"user-{inode.owner_id}"
+                            ),
+                            body=json.dumps({"id": id, "task": "ingest_inode"}),
+                        )
 
 
 # Index inode into opensearch
@@ -274,11 +281,16 @@ def index_inode(id, channel=None):
         session.commit()
 
         if channel:
-            channel.basic_publish(
-                exchange="user",
-                routing_key="public" if inode.is_public else f"user-{owner_id}",
-                body=json.dumps({"id": id, "task": "index_inode"}),
-            )
+            # Notify user when this inode had meaningful status changes
+            stmt = select(Inodes).where(Inodes.id == id)
+            inode = session.scalars(stmt).one()
+
+            if inode.is_ready or inode.error:
+                channel.basic_publish(
+                    exchange="user",
+                    routing_key="public" if inode.is_public else f"user-{owner_id}",
+                    body=json.dumps({"id": id, "task": "index_inode"}),
+                )
 
 
 # Generate embeddings for inode pages
@@ -310,11 +322,16 @@ def embed_inode(id, channel=None):
         session.commit()
 
         if channel:
-            channel.basic_publish(
-                exchange="user",
-                routing_key="public" if inode.is_public else f"user-{owner_id}",
-                body=json.dumps({"id": id, "task": "embed_inode"}),
-            )
+            # Notify user when this inode had meaningful status changes
+            stmt = select(Inodes).where(Inodes.id == id)
+            inode = session.scalars(stmt).one()
+
+            if inode.is_ready or inode.error:
+                channel.basic_publish(
+                    exchange="user",
+                    routing_key="public" if inode.is_public else f"user-{owner_id}",
+                    body=json.dumps({"id": id, "task": "embed_inode"}),
+                )
 
 
 # Move file in object storage
