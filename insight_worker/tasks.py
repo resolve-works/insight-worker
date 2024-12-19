@@ -17,6 +17,7 @@ from pathlib import Path
 from pikepdf import Pdf, PdfError
 from itertools import chain
 from sqlalchemy import create_engine, select, func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from .models import Pages, Inodes
 from .opensearch import opensearch_request
@@ -57,7 +58,6 @@ def repair_pdf(input_file, output_file):
     subprocess.check_call(
         [
             "/usr/bin/gs",
-            "-q",
             "-dSAFER",
             "-dNOPAUSE",
             "-dBATCH",
@@ -181,17 +181,27 @@ def ingest_inode(id, channel=None):
                     # fitz is pyMuPDF used for extracting text layers
                     file_pdf = fitz.open(optimized_path)
 
-                    pages = [
-                        Pages(
-                            # Get all contents, sorted by position on page
-                            contents=page.get_text(sort=True).strip(),
-                            # Index pages in file instead of in file
-                            index=inode.from_page + index,
-                            inode_id=inode.id,
-                        )
-                        for index, page in enumerate(file_pdf)
-                    ]
-                    session.add_all(pages)
+                    stmt = insert(Pages).values(
+                        [
+                            {
+                                # Get all contents, sorted by position on page
+                                "contents": page.get_text(sort=True).strip(),
+                                # Index pages in file instead of in file
+                                "index": inode.from_page + index,
+                                "inode_id": inode.id,
+                            }
+                            for index, page in enumerate(file_pdf)
+                        ]
+                    )
+
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="pages_inode_id_index_key",
+                        set_={
+                            "contents": stmt.excluded.contents,
+                        },
+                    )
+
+                    session.execute(stmt)
                 except PdfError as e:
                     raise IngestException("corrupted_file")
             except IngestException as e:
