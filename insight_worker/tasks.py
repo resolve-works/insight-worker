@@ -1,7 +1,6 @@
 import re
 import logging
 import ocrmypdf
-import fitz
 import json
 import magic
 import pika
@@ -19,6 +18,8 @@ from itertools import chain
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import LTTextContainer
 from .models import Pages, Inodes
 from .opensearch import opensearch_request
 from .rag import embed
@@ -119,6 +120,19 @@ def optimize_pdf(input_path, output_path):
     process.join()
 
 
+def extract_pdf_pages_text(path):
+    texts = []
+    for page_layout in extract_pages(path):
+        text = ""
+        for element in page_layout:
+            if isinstance(element, LTTextContainer):
+                text += element.get_text()
+
+        texts.append(text)
+
+    return texts
+
+
 class IngestException(Exception):
     pass
 
@@ -178,19 +192,18 @@ def ingest_inode(id, channel=None):
                             tags,
                         )
 
-                    # fitz is pyMuPDF used for extracting text layers
-                    file_pdf = fitz.open(optimized_path)
+                    page_texts = extract_pdf_pages_text(optimized_path)
 
                     stmt = insert(Pages).values(
                         [
                             {
                                 # Get all contents, sorted by position on page
-                                "contents": page.get_text(sort=True).strip(),
+                                "contents": text.replace("\x00", ""),
                                 # Index pages in file instead of in file
                                 "index": inode.from_page + index,
                                 "inode_id": inode.id,
                             }
-                            for index, page in enumerate(file_pdf)
+                            for index, text in enumerate(page_texts)
                         ]
                     )
 

@@ -1,9 +1,8 @@
-FROM jbarlow83/ocrmypdf-alpine:v16.9.0
+# We're not using the alpine image because we'd have to compile wheels for arm64 musl C
+FROM jbarlow83/ocrmypdf:v16.9.0
 
-# TODO - move the building / installing to builder step
-
-RUN apk update
-RUN apk add libmagic py3-pip
+RUN apt update
+RUN apt install -y libmagic1 python3-pip
 
 COPY . /home/insight
 WORKDIR /home/insight
