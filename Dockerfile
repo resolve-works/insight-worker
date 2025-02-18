@@ -1,13 +1,13 @@
-FROM jbarlow83/ocrmypdf:v16.6.1
+FROM jbarlow83/ocrmypdf-alpine:v16.9.0
 
 # TODO - move the building / installing to builder step
 
-RUN apt update
-RUN apt install -y libmagic1 python3-pip
+RUN apk update
+RUN apk add libmagic py3-pip
 
 COPY . /home/insight
 WORKDIR /home/insight
-RUN pip install .
+RUN pip install . --break-system-packages
 RUN rm -rf /home/insight
 
 WORKDIR /home
