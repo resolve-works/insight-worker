@@ -1,15 +1,10 @@
-import re
 import logging
 import ocrmypdf
 import json
 import magic
 import pika
 import subprocess
-from minio import Minio
-from minio.commonconfig import CopySource, Tags
-from minio.deleteobjects import DeleteObject
 from os import environ as env
-from urllib.parse import urlparse
 from multiprocessing import Process
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -22,10 +17,12 @@ from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextContainer
 from .models import Pages, Inodes
 from .opensearch import OpenSearchService
+from .minio import MinioService
 from .rag import embed
 
-# Create a global instance of OpenSearchService
+# Create global service instances
 opensearch_service = OpenSearchService()
+minio_service = MinioService()
 
 
 logging.basicConfig(level=logging.INFO)
@@ -35,27 +32,7 @@ engine = create_engine(
 )
 
 
-# This should probably live in the models. Keeping it here allows us to
-# re-generate the models with sqlacodegen.
-def object_path(owner_id, path):
-    return f"users/{owner_id}{path}"
-
-
-def optimized_object_path(owner_id, path):
-    optimized_path = re.sub(r"(.+)(/[^/.]+)(\..+)$", r"\1\2_optimized\3", path)
-    return f"users/{owner_id}{optimized_path}"
-
-
-def get_minio():
-    url = urlparse(env.get("STORAGE_ENDPOINT"))
-    return Minio(
-        url.netloc,
-        secure=url.scheme == "https",
-        access_key=env.get("STORAGE_ACCESS_KEY"),
-        secret_key=env.get("STORAGE_SECRET_KEY"),
-        # Supplying random region to minio will allow us to not have to set GetBucketLocation
-        region=env.get("STORAGE_REGION", "insight"),
-    )
+# Helper functions for PDF processing
 
 
 def repair_pdf(input_file, output_file):
@@ -145,7 +122,6 @@ class IngestException(Exception):
 # only parts of it
 def ingest_inode(id, channel=None):
     logging.info(f"Ingesting inode {id}")
-    minio = get_minio()
 
     with TemporaryDirectory() as dir:
         temp_path = Path(dir)
@@ -155,9 +131,9 @@ def ingest_inode(id, channel=None):
             stmt = select(Inodes).where(Inodes.id == id)
             inode = session.scalars(stmt).one()
 
-            minio.fget_object(
-                env.get("STORAGE_BUCKET"),
-                object_path(inode.owner_id, inode.path),
+            minio_service.download_file(
+                inode.owner_id,
+                inode.path,
                 original_path,
             )
 
@@ -179,20 +155,16 @@ def ingest_inode(id, channel=None):
                     repair_pdf(original_path, repaired_path)
                     slice_pdf(repaired_path, inode.from_page, inode.to_page)
                     optimize_pdf(repaired_path, optimized_path)
-                    minio.fput_object(
-                        env.get("STORAGE_BUCKET"),
-                        optimized_object_path(inode.owner_id, inode.path),
+                    minio_service.upload_optimized_file(
+                        inode.owner_id,
+                        inode.path,
                         optimized_path,
                     )
 
                     # If this is a public inode, mark the optimized file also as a public file
                     if inode.is_public:
-                        tags = Tags.new_object_tags()
-                        tags["is_public"] = str(inode.is_public)
-                        minio.set_object_tags(
-                            env.get("STORAGE_BUCKET"),
-                            optimized_object_path(inode.owner_id, inode.path),
-                            tags,
+                        minio_service.set_public_tags(
+                            inode.owner_id, inode.path, inode.is_public
                         )
 
                     page_texts = extract_pdf_pages_text(optimized_path)
@@ -296,17 +268,17 @@ def index_inode(id, channel=None):
                 for page in pages
             ],
         }
-        
+
         try:
             opensearch_service.index_document(id, document)
             inode.is_indexed = True
             session.commit()
-            
+
             if channel:
                 # Notify user when this inode had meaningful status changes
                 stmt = select(Inodes).where(Inodes.id == id)
                 inode = session.scalars(stmt).one()
-                
+
                 if inode.is_ready or inode.error:
                     channel.basic_publish(
                         exchange="user",
@@ -373,28 +345,8 @@ def move_inode(id, channel=None):
         if path != inode.path:
             # Move in storage backend if this is a file
             if inode.type == "file":
-                minio = get_minio()
-
-                paths = [
-                    (
-                        object_path(inode.owner_id, inode.path),
-                        object_path(inode.owner_id, path),
-                    ),
-                    (
-                        optimized_object_path(inode.owner_id, inode.path),
-                        optimized_object_path(inode.owner_id, path),
-                    ),
-                ]
-
-                for old_path, new_path in paths:
-                    # TODO - Proper error handling of storage failing
-                    minio.copy_object(
-                        env.get("STORAGE_BUCKET"),
-                        new_path,
-                        CopySource(env.get("STORAGE_BUCKET"), old_path),
-                    )
-
-                    minio.remove_object(env.get("STORAGE_BUCKET"), old_path)
+                # Move file in storage
+                minio_service.move_file(inode.owner_id, inode.path, path)
 
             # Move succesful, save new path (object paths are inferred from path)
             inode.path = path
@@ -424,17 +376,7 @@ def share_inode(id, channel=None):
 
         # For public files we use object tags to allow users access
         if inode.type == "file":
-            minio = get_minio()
-
-            for path in [
-                object_path(inode.owner_id, inode.path),
-                optimized_object_path(inode.owner_id, inode.path),
-            ]:
-                tags = Tags.new_object_tags()
-                tags["is_public"] = str(inode.is_public)
-                minio.set_object_tags(env.get("STORAGE_BUCKET"), path, tags)
-
-            # TODO - for user/group shares we can use IAM policies
+            minio_service.set_public_tags(inode.owner_id, inode.path, inode.is_public)
 
     if channel:
         # Re-index this inode to change share status in opensearch to
@@ -455,20 +397,13 @@ def delete_inode(data, channel=None):
 
     # Make sure all original and optimized files are destroyed
     if data["type"] == "file":
-        minio = get_minio()
-        paths = [
-            object_path(data["owner_id"], data["path"]),
-            optimized_object_path(data["owner_id"], data["path"]),
-        ]
-        delete_objects = (DeleteObject(path) for path in paths)
-
-        errors = minio.remove_objects(env.get("STORAGE_BUCKET"), delete_objects)
+        errors = minio_service.delete_file(data["owner_id"], data["path"])
         for error in errors:
             logging.error(f"error occurred when deleting object", error)
 
     # Remove indexed contents of files that descend this inode
     try:
-        opensearch_service.delete_document(data['id'])
+        opensearch_service.delete_document(data["id"])
     except Exception as e:
         # Record could be not found for whatever reason
         logging.error(f"Error deleting document {data['id']}: {str(e)}")

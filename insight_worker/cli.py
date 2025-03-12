@@ -3,7 +3,6 @@ import logging
 import json
 import ssl
 from os import environ as env
-from minio.commonconfig import CopySource
 from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
@@ -17,7 +16,6 @@ from .tasks import (
     delete_inode,
 )
 from .opensearch import OpenSearchService
-from .tasks import get_minio, optimized_object_path, object_path
 
 logging.basicConfig(level=logging.INFO)
 
