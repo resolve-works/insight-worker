@@ -16,57 +16,23 @@ from .tasks import (
     share_inode,
     delete_inode,
 )
-from .opensearch import opensearch_request
+from .opensearch import OpenSearchService
 from .tasks import get_minio, optimized_object_path, object_path
 
 logging.basicConfig(level=logging.INFO)
+
+# Create a global instance of OpenSearchService
+opensearch_service = OpenSearchService()
 
 
 # Make elastic treat pages as nested objects
 def configure_index():
     logging.info("Creating index")
-
-    json = {
-        "settings": {
-            "analysis": {
-                "analyzer": {"path_analyzer": {"tokenizer": "path_tokenizer"}},
-                "tokenizer": {
-                    "path_tokenizer": {
-                        "type": "path_hierarchy",
-                    }
-                },
-            }
-        },
-        "mappings": {
-            "properties": {
-                "pages": {
-                    "type": "nested",
-                    "properties": {
-                        "contents": {
-                            "type": "text",
-                            "term_vector": "with_positions_offsets",
-                        },
-                    },
-                },
-                "folder": {
-                    "type": "text",
-                    "analyzer": "path_analyzer",
-                    "fielddata": True,
-                },
-            }
-        },
-    }
-    res = opensearch_request("put", "/inodes", json)
-
-    if res.status_code == 200:
-        logging.info("Index created succesfully")
-    elif (
-        res.status_code == 400
-        and res.json()["error"]["type"] == "resource_already_exists_exception"
-    ):
-        logging.info("Index creation skipped, index already exists")
-    else:
-        raise Exception(res.text)
+    try:
+        opensearch_service.configure_index()
+        logging.info("Index created successfully")
+    except Exception as e:
+        raise Exception(f"Failed to create index: {str(e)}")
 
 
 def on_message(channel, method_frame, header_frame, body):
@@ -124,12 +90,11 @@ def create_index():
 
 @cli.command()
 def delete_index():
-    res = opensearch_request("delete", "/inodes")
-
-    if res.status_code == 200:
-        logging.info("Index destroyed succesfully")
-    else:
-        raise Exception(res.text)
+    try:
+        opensearch_service.delete_index()
+        logging.info("Index destroyed successfully")
+    except Exception as e:
+        raise Exception(f"Failed to delete index: {str(e)}")
 
 
 @cli.command()

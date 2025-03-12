@@ -21,8 +21,11 @@ from sqlalchemy.orm import Session
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextContainer
 from .models import Pages, Inodes
-from .opensearch import opensearch_request
+from .opensearch import OpenSearchService
 from .rag import embed
+
+# Create a global instance of OpenSearchService
+opensearch_service = OpenSearchService()
 
 
 logging.basicConfig(level=logging.INFO)
@@ -277,43 +280,42 @@ def index_inode(id, channel=None):
         pages = session.scalars(stmt).all()
 
         # Index file with pages and folder
-        res = opensearch_request(
-            "put",
-            f"/inodes/_doc/{id}",
-            {
-                "path": f"{inode.path}",
-                "type": inode.type,
-                "folder": str(Path(inode.path).parent),
-                "filename": inode.name,
-                "owner_id": str(owner_id),
-                "is_public": inode.is_public,
-                "readable_by": [str(owner_id)],
-                "pages": [
-                    {
-                        "index": page.index - inode.from_page,
-                        "contents": page.contents,
-                    }
-                    for page in pages
-                ],
-            },
-        )
-        if res.status_code not in [200, 201]:
-            raise Exception(res.text)
-
-        inode.is_indexed = True
-        session.commit()
-
-        if channel:
-            # Notify user when this inode had meaningful status changes
-            stmt = select(Inodes).where(Inodes.id == id)
-            inode = session.scalars(stmt).one()
-
-            if inode.is_ready or inode.error:
-                channel.basic_publish(
-                    exchange="user",
-                    routing_key="public" if inode.is_public else f"user-{owner_id}",
-                    body=json.dumps({"id": id, "task": "index_inode"}),
-                )
+        document = {
+            "path": f"{inode.path}",
+            "type": inode.type,
+            "folder": str(Path(inode.path).parent),
+            "filename": inode.name,
+            "owner_id": str(owner_id),
+            "is_public": inode.is_public,
+            "readable_by": [str(owner_id)],
+            "pages": [
+                {
+                    "index": page.index - inode.from_page,
+                    "contents": page.contents,
+                }
+                for page in pages
+            ],
+        }
+        
+        try:
+            opensearch_service.index_document(id, document)
+            inode.is_indexed = True
+            session.commit()
+            
+            if channel:
+                # Notify user when this inode had meaningful status changes
+                stmt = select(Inodes).where(Inodes.id == id)
+                inode = session.scalars(stmt).one()
+                
+                if inode.is_ready or inode.error:
+                    channel.basic_publish(
+                        exchange="user",
+                        routing_key="public" if inode.is_public else f"user-{owner_id}",
+                        body=json.dumps({"id": id, "task": "index_inode"}),
+                    )
+        except Exception as e:
+            logging.error(f"Error indexing document {id}: {str(e)}")
+            raise
 
 
 # Generate embeddings for inode pages
@@ -465,7 +467,8 @@ def delete_inode(data, channel=None):
             logging.error(f"error occurred when deleting object", error)
 
     # Remove indexed contents of files that descend this inode
-    res = opensearch_request("delete", f"/inodes/_doc/{data['id']}")
-    if res.status_code != 200:
+    try:
+        opensearch_service.delete_document(data['id'])
+    except Exception as e:
         # Record could be not found for whatever reason
-        logging.error(res.json())
+        logging.error(f"Error deleting document {data['id']}: {str(e)}")
