@@ -96,13 +96,6 @@ def delete_index():
 
 @cli.command()
 def rebuild_index():
-    postgres_uri = env.get("POSTGRES_URI")
-    if not postgres_uri:
-        logging.error("Missing required environment variable: POSTGRES_URI")
-        return
-
-    engine = create_engine(postgres_uri)
-
     with Session(engine) as session:
         stmt = update(Inodes).values(is_indexed=False)
         session.execute(stmt)
@@ -125,15 +118,6 @@ def process_messages():
     message_service = MessageService()
     # Set message service on worker
     worker.message_service = message_service
-
-    # Check required environment variables
-    required_vars = ["RABBITMQ_HOST", "RABBITMQ_USER", "RABBITMQ_PASSWORD", "QUEUE"]
-    missing_vars = [var for var in required_vars if not env.get(var)]
-    if missing_vars:
-        logging.error(
-            f"Missing required environment variables: {', '.join(missing_vars)}"
-        )
-        return
 
     ssl_options = None
     if env.get("RABBITMQ_SSL", "").lower() == "true":

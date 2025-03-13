@@ -14,15 +14,6 @@ class MessageService:
 
     def _initialize_connection(self):
         """Initialize connection to RabbitMQ"""
-        # Check required environment variables
-        required_vars = ["RABBITMQ_HOST", "RABBITMQ_USER", "RABBITMQ_PASSWORD"]
-        missing_vars = [var for var in required_vars if not env.get(var)]
-        if missing_vars:
-            logging.error(
-                f"Missing required environment variables: {', '.join(missing_vars)}"
-            )
-            return
-
         ssl_options = None
         if env.get("RABBITMQ_SSL", "").lower() == "true":
             context = ssl.create_default_context()
