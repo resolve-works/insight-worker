@@ -7,30 +7,29 @@ from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOp
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 from .models import Inodes
-from .tasks import (
-    ingest_inode,
-    embed_inode,
-    index_inode,
-    move_inode,
-    share_inode,
-    delete_inode,
-)
 from .opensearch import OpenSearchService
+from .minio import MinioService
+from .pdf import PdfService
+from .message import MessageService
+from .worker import InsightWorker
 
 logging.basicConfig(level=logging.INFO)
 
-# Create a global instance of OpenSearchService
+postgres_uri = env.get("POSTGRES_URI")
+if not postgres_uri:
+    logging.error("Missing required environment variable: POSTGRES_URI")
+    raise ValueError("POSTGRES_URI environment variable is required")
+
+connect_args = {"options": "-csearch_path=private,public"}
+engine = create_engine(postgres_uri, connect_args=connect_args)
+
+# Create global service instances
 opensearch_service = OpenSearchService()
+minio_service = MinioService()
+pdf_service = PdfService()
 
-
-# Make elastic treat pages as nested objects
-def configure_index():
-    logging.info("Creating index")
-    try:
-        opensearch_service.configure_index()
-        logging.info("Index created successfully")
-    except Exception as e:
-        raise Exception(f"Failed to create index: {str(e)}")
+# Create worker instance
+worker = InsightWorker(engine, opensearch_service, minio_service, pdf_service)
 
 
 def on_message(channel, method_frame, header_frame, body):
@@ -39,17 +38,17 @@ def on_message(channel, method_frame, header_frame, body):
     try:
         match method_frame.routing_key:
             case "ingest_inode":
-                ingest_inode(body["after"]["id"], channel)
+                worker.ingest_inode(body["after"]["id"])
             case "embed_inode":
-                embed_inode(body["after"]["id"], channel)
+                worker.embed_inode(body["after"]["id"])
             case "index_inode":
-                index_inode(body["after"]["id"], channel)
+                worker.index_inode(body["after"]["id"])
             case "move_inode":
-                move_inode(body["after"]["id"], channel)
+                worker.move_inode(body["after"]["id"])
             case "share_inode":
-                share_inode(body["after"]["id"], channel)
+                worker.share_inode(body["after"]["id"])
             case "delete_inode":
-                delete_inode(body["before"], channel)
+                worker.delete_inode(body["before"])
             case _:
                 raise Exception(f"Unknown routing key: {method_frame.routing_key}")
 
@@ -60,11 +59,6 @@ def on_message(channel, method_frame, header_frame, body):
 
 
 def on_channel_open(channel):
-    # Prefetch is disabled because we send messages on the channel passed to
-    # the on_message handler. When prefetch is enabled, these messages will
-    # only be published after all prefetched messages have been acked.
-    # A better solution would be to use a seperate publish channel
-    channel.basic_qos(prefetch_count=1)
     channel.basic_consume(env.get("QUEUE"), on_message)
 
 
@@ -83,7 +77,12 @@ def cli():
 
 @cli.command()
 def create_index():
-    configure_index()
+    logging.info("Creating index")
+    try:
+        opensearch_service.configure_index()
+        logging.info("Index created successfully")
+    except Exception as e:
+        raise Exception(f"Failed to create index: {str(e)}")
 
 
 @cli.command()
@@ -97,7 +96,12 @@ def delete_index():
 
 @cli.command()
 def rebuild_index():
-    engine = create_engine(env.get("POSTGRES_URI"))
+    postgres_uri = env.get("POSTGRES_URI")
+    if not postgres_uri:
+        logging.error("Missing required environment variable: POSTGRES_URI")
+        return
+
+    engine = create_engine(postgres_uri)
 
     with Session(engine) as session:
         stmt = update(Inodes).values(is_indexed=False)
@@ -108,15 +112,31 @@ def rebuild_index():
         inodes = session.scalars(stmt).all()
 
         for inode_id in inodes:
-            index_inode(inode_id)
+            worker.index_inode(inode_id)
 
 
 @cli.command()
 def process_messages():
-    configure_index()
+    # Configure index
+    # This is here so we can just clear the dev environment and everything will still work
+    opensearch_service.configure_index()
+
+    # Initialize message service
+    message_service = MessageService()
+    # Set message service on worker
+    worker.message_service = message_service
+
+    # Check required environment variables
+    required_vars = ["RABBITMQ_HOST", "RABBITMQ_USER", "RABBITMQ_PASSWORD", "QUEUE"]
+    missing_vars = [var for var in required_vars if not env.get(var)]
+    if missing_vars:
+        logging.error(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
+        return
 
     ssl_options = None
-    if env.get("RABBITMQ_SSL").lower() == "true":
+    if env.get("RABBITMQ_SSL", "").lower() == "true":
         context = ssl.create_default_context()
         ssl_options = SSLOptions(context)
 
@@ -138,6 +158,9 @@ def process_messages():
     except SystemExit:
         # Gracefully close the connection
         connection.close()
+        # Close message service connection
+        if message_service:
+            message_service.close()
         # Loop until we're fully closed.
         # The on_close callback is required to stop the io loop
         connection.ioloop.start()
