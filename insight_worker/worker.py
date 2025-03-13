@@ -3,9 +3,9 @@ import json
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from pikepdf import PdfError
-from sqlalchemy import select, func
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select, func, insert, update
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from .models import Pages, Inodes
 from .rag import embed
 
@@ -89,28 +89,45 @@ class InsightWorker:
                     # Extract text from the optimized PDF
                     page_texts = self.pdf_service.extract_pdf_pages_text(optimized_path)
 
-                    # Insert page contents into database
-                    stmt = insert(Pages).values(
-                        [
-                            {
-                                # Get all contents, sorted by position on page
-                                "contents": text.replace("\x00", ""),
-                                # Index pages in file instead of in file
-                                "index": inode.from_page + index,
-                                "inode_id": inode.id,
-                            }
-                            for index, text in enumerate(page_texts)
-                        ]
-                    )
+                    # Create list of page records
+                    page_values = [
+                        {
+                            "contents": text.replace("\x00", ""),
+                            "index": inode.from_page + index,
+                            "inode_id": inode.id,
+                        }
+                        for index, text in enumerate(page_texts)
+                    ]
 
-                    stmt = stmt.on_conflict_do_update(
-                        constraint="pages_inode_id_index_key",
-                        set_={
-                            "contents": stmt.excluded.contents,
-                        },
-                    )
+                    # Try bulk insert first
+                    try:
+                        session.execute(insert(Pages), page_values)
+                        session.commit()
+                    except IntegrityError:
+                        # If we hit conflicts, handle individually
+                        session.rollback()
 
-                    session.execute(stmt)
+                        for page_data in page_values:
+                            # Check if record exists
+                            existing = session.execute(
+                                select(Pages).where(
+                                    Pages.inode_id == page_data["inode_id"],
+                                    Pages.index == page_data["index"],
+                                )
+                            ).scalar_one_or_none()
+
+                            if existing:
+                                # Update existing record
+                                session.execute(
+                                    update(Pages)
+                                    .where(Pages.id == existing.id)
+                                    .values(contents=page_data["contents"])
+                                )
+                            else:
+                                # Insert new record
+                                session.execute(insert(Pages), [page_data])
+
+                        session.commit()
                 except IngestException as e:
                     inode.error = str(e)
                 except Exception as e:
