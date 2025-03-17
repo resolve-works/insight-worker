@@ -49,7 +49,8 @@ class OpenSearchService:
                             "type": "path_hierarchy",
                         }
                     },
-                }
+                },
+                "index.knn": True,
             },
             "mappings": {
                 "properties": {
@@ -59,6 +60,13 @@ class OpenSearchService:
                             "contents": {
                                 "type": "text",
                                 "term_vector": "with_positions_offsets",
+                            },
+                            "embedding": {
+                                "type": "knn_vector",
+                                "dimension": 1536,
+                                "space_type": "l2",
+                                "mode": "on_disk",
+                                "method": {"name": "hnsw"},
                             },
                         },
                     },

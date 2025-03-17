@@ -3,10 +3,8 @@ import json
 from unittest.mock import patch, MagicMock, call
 from pathlib import Path
 from pikepdf import PdfError
-from sqlalchemy import select, func, insert, update
 from sqlalchemy.exc import IntegrityError
-from insight_worker.worker import InsightWorker, IngestException
-from insight_worker.models import Pages, Inodes
+from insight_worker.worker import InsightWorker
 
 
 @pytest.fixture
@@ -355,26 +353,30 @@ def test_ingest_inode_success(worker, mock_services):
                     Path("/tmp/mock_temp_dir/repaired"),
                     Path("/tmp/mock_temp_dir/optimized"),
                 )
-                
+
                 # Verify the optimized file was uploaded
-                mock_services["minio_service"].upload_optimized_file.assert_called_once_with(
+                mock_services[
+                    "minio_service"
+                ].upload_optimized_file.assert_called_once_with(
                     mock_inode.owner_id,
                     mock_inode.path,
                     Path("/tmp/mock_temp_dir/optimized"),
                 )
-                
+
                 # Verify public tags were set
                 mock_services["minio_service"].set_public_tags.assert_called_once_with(
                     mock_inode.owner_id,
                     mock_inode.path,
                     True,
                 )
-                
+
                 # Verify text extraction
-                mock_services["pdf_service"].extract_pdf_pages_text.assert_called_once_with(
+                mock_services[
+                    "pdf_service"
+                ].extract_pdf_pages_text.assert_called_once_with(
                     Path("/tmp/mock_temp_dir/optimized")
                 )
-                
+
                 # Verify pages were inserted - use mock_session.execute.call_args_list to check
                 # instead of assert_any_call which compares object identity
                 expected_page_values = [
@@ -394,34 +396,40 @@ def test_ingest_inode_success(worker, mock_services):
                         "inode_id": inode_id,
                     },
                 ]
-                
+
                 # Check that an insert with these values was called
                 found = False
                 for call_args in mock_session.execute.call_args_list:
                     args, kwargs = call_args
-                    if len(args) == 2 and str(args[0]).startswith('INSERT INTO private.pages'):
+                    if len(args) == 2 and str(args[0]).startswith(
+                        "INSERT INTO private.pages"
+                    ):
                         if args[1] == expected_page_values:
                             found = True
                             break
-                
+
                 assert found, "Expected insert operation with page values not found"
-                
+
                 # Verify inode was marked as ingested
                 assert mock_inode.is_ingested == True
                 assert mock_inode.error is None
                 assert mock_inode.to_page == 3
-                
+
                 # Verify session was committed
                 mock_session.commit.assert_called()
-                
+
                 # Verify tasks were published
-                mock_services["message_service"].publish_task.assert_has_calls([
-                    call("embed_inode", json.dumps({"after": {"id": inode_id}})),
-                    call("index_inode", json.dumps({"after": {"id": inode_id}})),
-                ])
-                
+                mock_services["message_service"].publish_task.assert_has_calls(
+                    [
+                        call("embed_inode", json.dumps({"after": {"id": inode_id}})),
+                        call("index_inode", json.dumps({"after": {"id": inode_id}})),
+                    ]
+                )
+
                 # Verify user notification was sent
-                mock_services["message_service"].publish_user_notification.assert_called_with(
+                mock_services[
+                    "message_service"
+                ].publish_user_notification.assert_called_with(
                     mock_inode.owner_id,
                     mock_inode.is_public,
                     {"id": inode_id, "task": "ingest_inode"},
@@ -448,11 +456,11 @@ def test_index_inode(worker, mock_services):
     mock_page1 = MagicMock()
     mock_page1.index = 0
     mock_page1.contents = "Page 1 content"
-    
+
     mock_page2 = MagicMock()
     mock_page2.index = 1
     mock_page2.contents = "Page 2 content"
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
@@ -461,7 +469,7 @@ def test_index_inode(worker, mock_services):
     # Mock Path to handle the parent call
     with patch("insight_worker.worker.Path") as mock_path:
         mock_path.return_value.parent = Path("/path/to")
-        
+
         # Mock the Session to return our mock session
         with patch("insight_worker.worker.Session") as mock_session_class:
             mock_session_class.return_value.__enter__.return_value = mock_session
@@ -472,10 +480,10 @@ def test_index_inode(worker, mock_services):
             # Assertions
             # Verify query for inode
             mock_session.scalars().one.assert_called_once()
-            
+
             # Verify query for pages
             mock_session.scalars().all.assert_called_once()
-            
+
             # Verify document was created with correct format
             expected_document = {
                 "path": "/path/to/doc.pdf",
@@ -486,30 +494,26 @@ def test_index_inode(worker, mock_services):
                 "is_public": True,
                 "readable_by": ["user123"],
                 "pages": [
-                    {
-                        "index": 0,
-                        "contents": "Page 1 content"
-                    },
-                    {
-                        "index": 1,
-                        "contents": "Page 2 content"
-                    }
-                ]
+                    {"index": 0, "contents": "Page 1 content"},
+                    {"index": 1, "contents": "Page 2 content"},
+                ],
             }
-            
+
             # Verify document was indexed
             mock_services["opensearch_service"].index_document.assert_called_once_with(
                 inode_id, expected_document
             )
-            
+
             # Verify inode was marked as indexed
             assert mock_inode.is_indexed == True
-            
+
             # Verify session was committed
             mock_session.commit.assert_called_once()
-            
+
             # Verify user notification was sent
-            mock_services["message_service"].publish_user_notification.assert_called_once_with(
+            mock_services[
+                "message_service"
+            ].publish_user_notification.assert_called_once_with(
                 mock_inode.owner_id,
                 mock_inode.is_public,
                 {"id": inode_id, "task": "index_inode"},
@@ -529,58 +533,60 @@ def test_embed_inode(worker, mock_services):
     mock_inode.is_embedded = False
     mock_inode.error = None
     mock_inode.is_public = False
-    
+
     # Mock pages
     mock_page1 = MagicMock()
     mock_page1.contents = "Page 1 content"
     mock_page1.embedding = None
-    
+
     mock_page2 = MagicMock()
     mock_page2.contents = "Page 2 content"
     mock_page2.embedding = None
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
     mock_session.scalars().all.return_value = [mock_page1, mock_page2]
-    
+
     # Mock embeddings
     mock_embedding1 = [0.1, 0.2, 0.3]
     mock_embedding2 = [0.4, 0.5, 0.6]
-    
+
     # Mock the embed function
     with patch("insight_worker.worker.embed") as mock_embed:
         mock_embed.return_value = [mock_embedding1, mock_embedding2]
-        
+
         # Mock the Session to return our mock session
         with patch("insight_worker.worker.Session") as mock_session_class:
             mock_session_class.return_value.__enter__.return_value = mock_session
-            
+
             # Execute the method
             worker.embed_inode(inode_id)
-            
+
             # Assertions
             # Verify query for inode
             mock_session.scalars().one.assert_called_once()
-            
+
             # Verify query for pages
             mock_session.scalars().all.assert_called_once()
-            
+
             # Verify embed function was called with correct data
             mock_embed.assert_called_once_with(["Page 1 content", "Page 2 content"])
-            
+
             # Verify embeddings were assigned to pages
             assert mock_page1.embedding == mock_embedding1
             assert mock_page2.embedding == mock_embedding2
-            
+
             # Verify inode was marked as embedded
             assert mock_inode.is_embedded == True
-            
+
             # Verify session was committed
             mock_session.commit.assert_called_once()
-            
+
             # Verify user notification was sent
-            mock_services["message_service"].publish_user_notification.assert_called_once_with(
+            mock_services[
+                "message_service"
+            ].publish_user_notification.assert_called_once_with(
                 mock_inode.owner_id,
                 mock_inode.is_public,
                 {"id": inode_id, "task": "embed_inode"},
@@ -597,47 +603,44 @@ def test_move_inode(worker, mock_services):
     mock_inode.path = "/old/path/doc.pdf"
     mock_inode.type = "file"
     mock_inode.should_move = True
-    
+
     # New path from database function inode_path
     new_path = "/new/path/doc.pdf"
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
     mock_session.scalars().first.return_value = new_path
-    
+
     # Mock the Session to return our mock session
     with patch("insight_worker.worker.Session") as mock_session_class:
         mock_session_class.return_value.__enter__.return_value = mock_session
-        
+
         # Execute the method
         worker.move_inode(inode_id)
-        
+
         # Assertions
         # Verify query for inode
         mock_session.scalars().one.assert_called_once()
-        
+
         # Verify inode_path function was called
         mock_session.scalars().first.assert_called_once()
-        
+
         # Verify minio service was called to move the file
         mock_services["minio_service"].move_file.assert_called_once_with(
-            mock_inode.owner_id,
-            "/old/path/doc.pdf",
-            new_path
+            mock_inode.owner_id, "/old/path/doc.pdf", new_path
         )
-        
+
         # Verify inode's path was updated
         assert mock_inode.path == new_path
         assert mock_inode.should_move == False
-        
+
         # Verify session was committed
         mock_session.commit.assert_called_once()
-        
+
         # Verify index task was published
         mock_services["message_service"].publish_task.assert_called_once_with(
-            "index_inode", 
-            json.dumps({"after": {"id": inode_id}})
+            "index_inode", json.dumps({"after": {"id": inode_id}})
         )
 
 
@@ -651,33 +654,30 @@ def test_share_inode(worker, mock_services):
     mock_inode.path = "/path/to/doc.pdf"
     mock_inode.type = "file"
     mock_inode.is_public = True
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
-    
+
     # Mock the Session to return our mock session
     with patch("insight_worker.worker.Session") as mock_session_class:
         mock_session_class.return_value.__enter__.return_value = mock_session
-        
+
         # Execute the method
         worker.share_inode(inode_id)
-        
+
         # Assertions
         # Verify query for inode
         mock_session.scalars().one.assert_called_once()
-        
+
         # Verify minio service was called to set public tags
         mock_services["minio_service"].set_public_tags.assert_called_once_with(
-            mock_inode.owner_id,
-            mock_inode.path,
-            True
+            mock_inode.owner_id, mock_inode.path, True
         )
-        
+
         # Verify index task was published
         mock_services["message_service"].publish_task.assert_called_once_with(
-            "index_inode", 
-            json.dumps({"after": {"id": inode_id}})
+            "index_inode", json.dumps({"after": {"id": inode_id}})
         )
 
 
@@ -689,22 +689,21 @@ def test_delete_inode(worker, mock_services):
         "id": inode_id,
         "owner_id": "user123",
         "path": "/path/to/doc.pdf",
-        "type": "file"
+        "type": "file",
     }
-    
+
     # Mock services
     mock_services["minio_service"].delete_file.return_value = []  # No errors
-    
+
     # Execute the method
     worker.delete_inode(inode_data)
-    
+
     # Assertions
     # Verify minio service was called to delete the file
     mock_services["minio_service"].delete_file.assert_called_once_with(
-        inode_data["owner_id"],
-        inode_data["path"]
+        inode_data["owner_id"], inode_data["path"]
     )
-    
+
     # Verify opensearch service was called to delete the document
     mock_services["opensearch_service"].delete_document.assert_called_once_with(
         inode_id
@@ -720,35 +719,37 @@ def test_index_inode_error(worker, mock_services):
     mock_inode.owner_id = "user123"
     mock_inode.path = "/path/to/doc.pdf"
     mock_inode.is_public = False
-    
+
     # Mock pages
     mock_page = MagicMock()
     mock_page.index = 0
     mock_page.contents = "Page content"
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
     mock_session.scalars().all.return_value = [mock_page]
-    
+
     # Mock Path to handle the parent call
     with patch("insight_worker.worker.Path") as mock_path:
         mock_path.return_value.parent = Path("/path/to")
-        
+
         # Mock the Session to return our mock session
         with patch("insight_worker.worker.Session") as mock_session_class:
             mock_session_class.return_value.__enter__.return_value = mock_session
-            
+
             # Make opensearch service throw an exception
-            mock_services["opensearch_service"].index_document.side_effect = Exception("Index error")
-            
+            mock_services["opensearch_service"].index_document.side_effect = Exception(
+                "Index error"
+            )
+
             # Execute the method and expect an exception
             with pytest.raises(Exception):
                 worker.index_inode(inode_id)
-            
+
             # Verify error was logged
             mock_services["opensearch_service"].index_document.assert_called_once()
-            
+
             # Verify session was not committed
             mock_session.commit.assert_not_called()
 
@@ -761,19 +762,19 @@ def test_embed_inode_with_error_inode(worker, mock_services):
     mock_inode.id = inode_id
     mock_inode.owner_id = "user123"
     mock_inode.error = "Some error"  # Inode has an error
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
-    
+
     # Mock the Session to return our mock session
     with patch("insight_worker.worker.Session") as mock_session_class:
         mock_session_class.return_value.__enter__.return_value = mock_session
-        
+
         # Execute the method and expect an exception
         with pytest.raises(Exception, match="Cannot embed errored file"):
             worker.embed_inode(inode_id)
-        
+
         # Verify no embed function was called
         mock_session.scalars().all.assert_not_called()
 
@@ -786,23 +787,24 @@ def test_delete_inode_with_error(worker, mock_services):
         "id": inode_id,
         "owner_id": "user123",
         "path": "/path/to/doc.pdf",
-        "type": "file"
+        "type": "file",
     }
-    
+
     # Mock services
     mock_services["minio_service"].delete_file.return_value = []  # No errors
-    mock_services["opensearch_service"].delete_document.side_effect = Exception("Document not found")
-    
+    mock_services["opensearch_service"].delete_document.side_effect = Exception(
+        "Document not found"
+    )
+
     # Execute the method - should not raise exception
     worker.delete_inode(inode_data)
-    
+
     # Assertions
     # Verify minio service was called to delete the file
     mock_services["minio_service"].delete_file.assert_called_once_with(
-        inode_data["owner_id"],
-        inode_data["path"]
+        inode_data["owner_id"], inode_data["path"]
     )
-    
+
     # Verify opensearch service was called to delete the document
     mock_services["opensearch_service"].delete_document.assert_called_once_with(
         inode_id
@@ -824,25 +826,25 @@ def test_ingest_inode_integrity_error(worker, mock_services):
     mock_inode.error = None
     mock_inode.is_ready = True
     mock_inode.is_ingested = False
-    
+
     # Mock pages for individual inserts
     mock_existing_page = MagicMock()
     mock_existing_page.id = 100
-    
+
     # Create a MagicMock for the execute result that will be used for scalar_one_or_none calls
     mock_execute_result_1 = MagicMock()
     mock_execute_result_1.scalar_one_or_none.return_value = mock_existing_page
-    
+
     mock_execute_result_2 = MagicMock()
     mock_execute_result_2.scalar_one_or_none.return_value = None
-    
+
     mock_execute_result_3 = MagicMock()
     mock_execute_result_3.scalar_one_or_none.return_value = None
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
-    
+
     # First execute will raise IntegrityError, then return the execute results for scalar calls,
     # then None for the other operations
     mock_session.execute.side_effect = [
@@ -854,22 +856,22 @@ def test_ingest_inode_integrity_error(worker, mock_services):
         mock_execute_result_3,  # For checking existing page 2
         None,  # Insert for new page 2
     ]
-    
+
     # Set up the mocked TemporaryDirectory
     with patch("insight_worker.worker.TemporaryDirectory") as mock_temp_dir:
         mock_temp_dir.return_value.__enter__.return_value = "/tmp/mock_temp_dir"
-        
+
         # Mock Path to return predictable paths
         with patch("insight_worker.worker.Path") as mock_path:
             mock_path.return_value = MagicMock()
             mock_path.return_value.__truediv__.side_effect = lambda x: Path(
                 f"/tmp/mock_temp_dir/{x}"
             )
-            
+
             # Mock the Session to return our mock session
             with patch("insight_worker.worker.Session") as mock_session_class:
                 mock_session_class.return_value.__enter__.return_value = mock_session
-                
+
                 # Set up the PDF service to succeed
                 mock_services["pdf_service"].validate_pdf_mime_type.return_value = True
                 mock_services["pdf_service"].get_pdf_page_count.return_value = 3
@@ -878,10 +880,10 @@ def test_ingest_inode_integrity_error(worker, mock_services):
                     "Page 2 content",
                     "Page 3 content",
                 ]
-                
+
                 # Execute the method
                 worker.ingest_inode(inode_id)
-                
+
                 # Verify bulk insert was attempted - use call_args_list instead of assert_any_call
                 expected_page_values = [
                     {
@@ -900,30 +902,32 @@ def test_ingest_inode_integrity_error(worker, mock_services):
                         "inode_id": inode_id,
                     },
                 ]
-                
+
                 # Check that the bulk insert was attempted
                 found_bulk_insert = False
                 for call_args in mock_session.execute.call_args_list:
                     args, kwargs = call_args
-                    if len(args) == 2 and str(args[0]).startswith('INSERT INTO private.pages'):
+                    if len(args) == 2 and str(args[0]).startswith(
+                        "INSERT INTO private.pages"
+                    ):
                         # Only check the structure, not the exact object identity
                         if args[1] == expected_page_values:
                             found_bulk_insert = True
                             break
-                
+
                 assert found_bulk_insert, "Expected bulk insert operation not found"
-                
+
                 # Verify session was rolled back after IntegrityError
                 mock_session.rollback.assert_called_once()
-                
+
                 # Verify the scalar_one_or_none calls were made correctly
                 mock_execute_result_1.scalar_one_or_none.assert_called_once()
                 mock_execute_result_2.scalar_one_or_none.assert_called_once()
                 mock_execute_result_3.scalar_one_or_none.assert_called_once()
-                
+
                 # Verify inode was marked as ingested
                 assert mock_inode.is_ingested == True
-                
+
                 # Verify session was committed
                 mock_session.commit.assert_called()
 
@@ -939,40 +943,40 @@ def test_move_inode_no_change(worker, mock_services):
     mock_inode.path = path
     mock_inode.type = "file"
     mock_inode.should_move = True
-    
+
     # Same path from database function inode_path
     new_path = path
-    
+
     # Mock SQLAlchemy session
     mock_session = MagicMock()
     mock_session.scalars().one.return_value = mock_inode
     mock_session.scalars().first.return_value = new_path
-    
+
     # Mock the Session to return our mock session
     with patch("insight_worker.worker.Session") as mock_session_class:
         mock_session_class.return_value.__enter__.return_value = mock_session
-        
+
         # Execute the method
         worker.move_inode(inode_id)
-        
+
         # Assertions
         # Verify query for inode
         mock_session.scalars().one.assert_called_once()
-        
+
         # Verify inode_path function was called
         mock_session.scalars().first.assert_called_once()
-        
+
         # Verify minio service was NOT called to move the file (paths are the same)
         mock_services["minio_service"].move_file.assert_not_called()
-        
+
         # Verify inode's path was not updated
         assert mock_inode.path == path
-        
+
         # Verify should_move was not changed
         assert mock_inode.should_move == True
-        
+
         # Verify session was not committed
         mock_session.commit.assert_not_called()
-        
+
         # Verify no index task was published
         mock_services["message_service"].publish_task.assert_not_called()
