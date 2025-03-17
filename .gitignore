@@ -2,3 +2,4 @@
 *.pyo
 .env
 .venv
+CLAUDE.md
