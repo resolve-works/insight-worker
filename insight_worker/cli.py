@@ -96,6 +96,18 @@ def delete_index():
 
 @cli.command()
 def rebuild_index():
+    try:
+        opensearch_service.delete_index()
+        logging.info("Index destroyed successfully")
+    except Exception as e:
+        pass
+
+    try:
+        opensearch_service.configure_index()
+        logging.info("Index created successfully")
+    except Exception as e:
+        raise Exception(f"Failed to create index: {str(e)}")
+
     with Session(engine) as session:
         stmt = update(Inodes).values(is_indexed=False)
         session.execute(stmt)
