@@ -6,8 +6,12 @@ from pikepdf import PdfError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
-from .models import Pages, Inodes
-from .rag import embed
+
+from insight_worker.opensearch import OpenSearchService
+from insight_worker.minio import MinioService
+from insight_worker.pdf import PdfService
+from insight_worker.models import Pages, Inodes
+from insight_worker.rag import embed
 
 
 class IngestException(Exception):
@@ -18,9 +22,9 @@ class InsightWorker:
     def __init__(
         self,
         engine,
-        opensearch_service,
-        minio_service,
-        pdf_service,
+        opensearch_service: OpenSearchService,
+        minio_service: MinioService,
+        pdf_service: PdfService,
         message_service=None,
     ):
         self.engine = engine
@@ -146,27 +150,37 @@ class InsightWorker:
             )
             pages = session.scalars(stmt).all()
 
-            # Index file with pages and folder
-            document = {
-                "path": f"{inode.path}",
-                "type": inode.type,
-                "folder": str(Path(inode.path).parent),
-                "filename": inode.name,
-                "owner_id": str(owner_id),
-                "is_public": inode.is_public,
-                "readable_by": [str(owner_id)],
-                "pages": [
-                    {
+            try:
+                # Index parent inode document
+                parent_document = {
+                    "path": f"{inode.path}",
+                    "type": inode.type,
+                    "folder": str(Path(inode.path).parent),
+                    "filename": inode.name,
+                    "owner_id": str(owner_id),
+                    "is_public": inode.is_public,
+                    "readable_by": [str(owner_id)],
+                    "join_field": {"name": "inode"},
+                }
+
+                # Index the parent inode first
+                self.opensearch_service.index_document(id, parent_document)
+
+                # Then index each page as a child document with proper routing
+                for page in pages:
+                    # Create a unique ID for each page
+                    page_id = f"{id}_{page.index}"
+                    page_document = {
+                        "owner_id": str(owner_id),
+                        "is_public": inode.is_public,
+                        "readable_by": [str(owner_id)],
                         "index": page.index - inode.from_page,
                         "contents": page.contents,
                         "embedding": page.embedding.tolist(),
+                        "join_field": {"name": "page", "parent": id},
                     }
-                    for page in pages
-                ],
-            }
+                    self.opensearch_service.index_document(page_id, page_document, id)
 
-            try:
-                self.opensearch_service.index_document(id, document)
                 inode.is_indexed = True
                 session.commit()
 

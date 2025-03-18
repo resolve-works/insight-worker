@@ -1,3 +1,4 @@
+import logging
 import httpx
 from base64 import b64encode
 from os import environ as env
@@ -54,26 +55,28 @@ class OpenSearchService:
             },
             "mappings": {
                 "properties": {
-                    "pages": {
-                        "type": "nested",
-                        "properties": {
-                            "contents": {
-                                "type": "text",
-                                "term_vector": "with_positions_offsets",
-                            },
-                            "embedding": {
-                                "type": "knn_vector",
-                                "dimension": 1536,
-                                "space_type": "l2",
-                                "mode": "on_disk",
-                                "method": {"name": "hnsw"},
-                            },
-                        },
+                    "join_field": {
+                        "type": "join",
+                        # Parent 'inode' has children of type 'page'
+                        "relations": {"inode": "page"},
                     },
+                    # Inode properties
                     "folder": {
                         "type": "text",
                         "analyzer": "path_analyzer",
                         "fielddata": True,
+                    },
+                    # Page properties
+                    "contents": {
+                        "type": "text",
+                        "term_vector": "with_positions_offsets",
+                    },
+                    "embedding": {
+                        "type": "knn_vector",
+                        "dimension": 1536,
+                        "space_type": "l2",
+                        "mode": "on_disk",
+                        "method": {"name": "hnsw"},
                     },
                 }
             },
@@ -98,14 +101,21 @@ class OpenSearchService:
         else:
             raise Exception(res.text)
 
-    def index_document(self, id: str, document: Dict[str, Any]):
+    def index_document(
+        self, id: str, document: Dict[str, Any], routing_key: str | None = None
+    ):
         """Index a document in OpenSearch
 
         :param id: Document ID
         :param document: Document data
         :return: Response from OpenSearch
         """
-        res = self._request("put", f"/inodes/_doc/{id}", document)
+
+        url = f"/inodes/_doc/{id}"
+        if routing_key is not None:
+            url += f"?routing={routing_key}"
+
+        res = self._request("put", url, document)
         if res.status_code not in [200, 201]:
             raise Exception(res.text)
         return res
@@ -116,7 +126,21 @@ class OpenSearchService:
         :param id: Document ID
         :return: Response from OpenSearch
         """
-        res = self._request("delete", f"/inodes/_doc/{id}")
-        if res.status_code != 200:
-            return False
-        return True
+        delete_pages_query = {
+            "query": {
+                "has_parent": {"parent_type": "inode", "query": {"term": {"_id": id}}}
+            }
+        }
+
+        # Delete all child pages first
+        delete_pages_response = self._request(
+            "post", f"/inodes/_delete_by_query?routing={id}", delete_pages_query
+        )
+
+        if delete_pages_response.status_code != 200:
+            logging.error(delete_pages_response.json())
+
+        # Then delete the parent document
+        delete_inode_response = self._request("delete", f"/inodes/_doc/{id}")
+        if delete_inode_response.status_code != 200:
+            logging.error(delete_inode_response.json())
