@@ -159,7 +159,7 @@ class InsightWorker:
                     {
                         "index": page.index - inode.from_page,
                         "contents": page.contents,
-                        "embedding": page.embedding,
+                        "embedding": page.embedding.tolist(),
                     }
                     for page in pages
                 ],
