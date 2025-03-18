@@ -99,6 +99,7 @@ class InsightWorker:
                         for index, text in enumerate(page_texts)
                     ]
 
+                    # Use PostgreSQL dialect insert with values and on_conflict_do_update
                     stmt = insert(Pages).values(page_values)
 
                     stmt = stmt.on_conflict_do_update(
