@@ -140,7 +140,6 @@ class InsightWorker:
                         # After ingest, trigger index & embed
                         body = json.dumps({"after": {"id": id}})
                         self.message_service.publish_task("embed_inode", body)
-                        self.message_service.publish_task("index_inode", body)
 
                         # Notify user when this inode had meaningful status changes
                         if inode.is_ready or inode.error:
@@ -228,6 +227,9 @@ class InsightWorker:
             session.commit()
 
             if self.message_service:
+                body = json.dumps({"after": {"id": id}})
+                self.message_service.publish_task("index_inode", body)
+
                 # Notify user when this inode had meaningful status changes
                 if inode.is_ready or inode.error:
                     self.message_service.publish_user_notification(

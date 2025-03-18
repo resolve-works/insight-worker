@@ -422,7 +422,6 @@ def test_ingest_inode_success(worker, mock_services):
                 mock_services["message_service"].publish_task.assert_has_calls(
                     [
                         call("embed_inode", json.dumps({"after": {"id": inode_id}})),
-                        call("index_inode", json.dumps({"after": {"id": inode_id}})),
                     ]
                 )
 
@@ -456,10 +455,12 @@ def test_index_inode(worker, mock_services):
     mock_page1 = MagicMock()
     mock_page1.index = 0
     mock_page1.contents = "Page 1 content"
+    mock_page1.embedding = [0.1, 0.2, 0.3]
 
     mock_page2 = MagicMock()
     mock_page2.index = 1
     mock_page2.contents = "Page 2 content"
+    mock_page2.embedding = [0.4, 0.5, 0.6]
 
     # Mock SQLAlchemy session
     mock_session = MagicMock()
@@ -494,8 +495,16 @@ def test_index_inode(worker, mock_services):
                 "is_public": True,
                 "readable_by": ["user123"],
                 "pages": [
-                    {"index": 0, "contents": "Page 1 content"},
-                    {"index": 1, "contents": "Page 2 content"},
+                    {
+                        "index": 0,
+                        "contents": "Page 1 content",
+                        "embedding": [0.1, 0.2, 0.3],
+                    },
+                    {
+                        "index": 1,
+                        "contents": "Page 2 content",
+                        "embedding": [0.4, 0.5, 0.6],
+                    },
                 ],
             }
 
@@ -582,6 +591,13 @@ def test_embed_inode(worker, mock_services):
 
             # Verify session was committed
             mock_session.commit.assert_called_once()
+
+            # Verify tasks were published
+            mock_services["message_service"].publish_task.assert_has_calls(
+                [
+                    call("index_inode", json.dumps({"after": {"id": inode_id}})),
+                ]
+            )
 
             # Verify user notification was sent
             mock_services[
