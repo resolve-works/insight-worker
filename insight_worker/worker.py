@@ -3,9 +3,9 @@ import json
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from pikepdf import PdfError
-from sqlalchemy import select, func, insert, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
 from .models import Pages, Inodes
 from .rag import embed
 
@@ -99,35 +99,16 @@ class InsightWorker:
                         for index, text in enumerate(page_texts)
                     ]
 
-                    # Try bulk insert first
-                    try:
-                        session.execute(insert(Pages), page_values)
-                        session.commit()
-                    except IntegrityError:
-                        # If we hit conflicts, handle individually
-                        session.rollback()
+                    stmt = insert(Pages).values(page_values)
 
-                        for page_data in page_values:
-                            # Check if record exists
-                            existing = session.execute(
-                                select(Pages).where(
-                                    Pages.inode_id == page_data["inode_id"],
-                                    Pages.index == page_data["index"],
-                                )
-                            ).scalar_one_or_none()
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="pages_inode_id_index_key",
+                        set_={
+                            "contents": stmt.excluded.contents,
+                        },
+                    )
 
-                            if existing:
-                                # Update existing record
-                                session.execute(
-                                    update(Pages)
-                                    .where(Pages.id == existing.id)
-                                    .values(contents=page_data["contents"])
-                                )
-                            else:
-                                # Insert new record
-                                session.execute(insert(Pages), [page_data])
-
-                        session.commit()
+                    session.execute(stmt)
                 except IngestException as e:
                     inode.error = str(e)
                 except Exception as e:
