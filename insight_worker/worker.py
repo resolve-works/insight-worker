@@ -153,6 +153,7 @@ class InsightWorker:
             try:
                 # Index parent inode document
                 parent_document = {
+                    "id": inode.id,
                     "path": f"{inode.path}",
                     "type": inode.type,
                     "folder": str(Path(inode.path).parent),
@@ -171,6 +172,7 @@ class InsightWorker:
                     # Create a unique ID for each page
                     page_id = f"{id}_{page.index}"
                     page_document = {
+                        "id": page.id,
                         "owner_id": str(owner_id),
                         "is_public": inode.is_public,
                         "readable_by": [str(owner_id)],

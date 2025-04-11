@@ -74,9 +74,13 @@ class OpenSearchService:
                     "embedding": {
                         "type": "knn_vector",
                         "dimension": 1536,
-                        "space_type": "l2",
-                        "mode": "on_disk",
-                        "method": {"name": "hnsw"},
+                        # "mode": "on_disk",
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "l2",
+                            "engine": "faiss",
+                            "parameters": {"ef_construction": 400, "m": 16},
+                        },
                     },
                 }
             },
