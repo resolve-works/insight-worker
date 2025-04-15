@@ -10,7 +10,6 @@ from .models import Inodes
 from .opensearch import OpenSearchService
 from .minio import MinioService
 from .pdf import PdfService
-from .message import MessageService
 from .worker import InsightWorker
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +33,9 @@ worker = InsightWorker(engine, opensearch_service, minio_service, pdf_service)
 
 def on_message(channel, method_frame, header_frame, body):
     body = json.loads(body)
+    
+    # Set the channel on the worker to use for publishing
+    worker.channel = channel
 
     try:
         match method_frame.routing_key:
@@ -126,11 +128,6 @@ def process_messages():
     # This is here so we can just clear the dev environment and everything will still work
     opensearch_service.configure_index()
 
-    # Initialize message service
-    message_service = MessageService()
-    # Set message service on worker
-    worker.message_service = message_service
-
     ssl_options = None
     if env.get("RABBITMQ_SSL", "").lower() == "true":
         context = ssl.create_default_context()
@@ -154,9 +151,6 @@ def process_messages():
     except SystemExit:
         # Gracefully close the connection
         connection.close()
-        # Close message service connection
-        if message_service:
-            message_service.close()
         # Loop until we're fully closed.
         # The on_close callback is required to stop the io loop
         connection.ioloop.start()

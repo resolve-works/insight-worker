@@ -6,6 +6,7 @@ from pikepdf import PdfError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+import pika
 
 from insight_worker.opensearch import OpenSearchService
 from insight_worker.minio import MinioService
@@ -25,13 +26,13 @@ class InsightWorker:
         opensearch_service: OpenSearchService,
         minio_service: MinioService,
         pdf_service: PdfService,
-        message_service=None,
+        channel=None,
     ):
         self.engine = engine
         self.opensearch_service = opensearch_service
         self.minio_service = minio_service
         self.pdf_service = pdf_service
-        self.message_service = message_service
+        self.channel = channel
 
     # Generate a OCRd and optimized version of a uploaded PDF. The resulting PDF is
     # optimized for "fast web view", meaning it is linearized, allowing us to load
@@ -122,18 +123,26 @@ class InsightWorker:
                     inode.is_ingested = True
                     session.commit()
 
-                    if self.message_service:
+                    if self.channel:
                         # After ingest, trigger index & embed
                         body = json.dumps({"after": {"id": id}})
-                        self.message_service.publish_task("embed_inode", body)
+                        self.channel.basic_publish(
+                            exchange="insight",
+                            routing_key="embed_inode",
+                            body=body,
+                            properties=pika.BasicProperties(
+                                delivery_mode=2,  # persistent
+                            ),
+                        )
 
                         # Notify user when this inode had meaningful status changes
                         if inode.is_ready or inode.error:
                             # Also notify user
-                            self.message_service.publish_user_notification(
-                                inode.owner_id,
-                                inode.is_public,
-                                {"id": id, "task": "ingest_inode"},
+                            notification = json.dumps({"id": id, "task": "ingest_inode"})
+                            self.channel.basic_publish(
+                                exchange="user",
+                                routing_key="public" if inode.is_public else f"user-{inode.owner_id}",
+                                body=notification,
                             )
 
     # Index inode into opensearch
@@ -186,11 +195,14 @@ class InsightWorker:
                 inode.is_indexed = True
                 session.commit()
 
-                if self.message_service:
+                if self.channel:
                     # Notify user when this inode had meaningful status changes
                     if inode.is_ready or inode.error:
-                        self.message_service.publish_user_notification(
-                            owner_id, inode.is_public, {"id": id, "task": "index_inode"}
+                        notification = json.dumps({"id": id, "task": "index_inode"})
+                        self.channel.basic_publish(
+                            exchange="user",
+                            routing_key="public" if inode.is_public else f"user-{owner_id}",
+                            body=notification,
                         )
             except Exception as e:
                 logging.error(f"Error indexing document {id}: {str(e)}", exc_info=e)
@@ -224,14 +236,24 @@ class InsightWorker:
             inode.is_embedded = True
             session.commit()
 
-            if self.message_service:
+            if self.channel:
                 body = json.dumps({"after": {"id": id}})
-                self.message_service.publish_task("index_inode", body)
+                self.channel.basic_publish(
+                    exchange="insight",
+                    routing_key="index_inode",
+                    body=body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=2,  # persistent
+                    ),
+                )
 
                 # Notify user when this inode had meaningful status changes
                 if inode.is_ready or inode.error:
-                    self.message_service.publish_user_notification(
-                        owner_id, inode.is_public, {"id": id, "task": "embed_inode"}
+                    notification = json.dumps({"id": id, "task": "embed_inode"})
+                    self.channel.basic_publish(
+                        exchange="user",
+                        routing_key="public" if inode.is_public else f"user-{owner_id}",
+                        body=notification,
                     )
 
     # Move file in object storage
@@ -257,9 +279,16 @@ class InsightWorker:
                 session.commit()
 
                 # After update, re-index
-                if self.message_service:
+                if self.channel:
                     body = json.dumps({"after": {"id": id}})
-                    self.message_service.publish_task("index_inode", body)
+                    self.channel.basic_publish(
+                        exchange="insight",
+                        routing_key="index_inode",
+                        body=body,
+                        properties=pika.BasicProperties(
+                            delivery_mode=2,  # persistent
+                        ),
+                    )
 
     # Make file accessible for non-owners on inode share
     def share_inode(self, id):
@@ -275,10 +304,17 @@ class InsightWorker:
                     inode.owner_id, inode.path, inode.is_public
                 )
 
-        if self.message_service:
+        if self.channel:
             # Re-index this inode to change share status in opensearch to
             body = json.dumps({"after": {"id": id}})
-            self.message_service.publish_task("index_inode", body)
+            self.channel.basic_publish(
+                exchange="insight",
+                routing_key="index_inode",
+                body=body,
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # persistent
+                ),
+            )
 
     # Remove files from object storage on inode deletion
     def delete_inode(self, data):
