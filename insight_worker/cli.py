@@ -1,9 +1,7 @@
 import click
 import logging
-import json
-import ssl
+import asyncio
 from os import environ as env
-from pika import ConnectionParameters, SelectConnection, PlainCredentials, SSLOptions
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 from .models import Inodes
@@ -29,47 +27,6 @@ pdf_service = PdfService()
 
 # Create worker instance
 worker = InsightWorker(engine, opensearch_service, minio_service, pdf_service)
-
-
-def on_message(channel, method_frame, header_frame, body):
-    body = json.loads(body)
-    
-    # Set the channel on the worker to use for publishing
-    worker.channel = channel
-
-    try:
-        match method_frame.routing_key:
-            case "ingest_inode":
-                worker.ingest_inode(body["after"]["id"])
-            case "embed_inode":
-                worker.embed_inode(body["after"]["id"])
-            case "index_inode":
-                worker.index_inode(body["after"]["id"])
-            case "move_inode":
-                worker.move_inode(body["after"]["id"])
-            case "share_inode":
-                worker.share_inode(body["after"]["id"])
-            case "delete_inode":
-                worker.delete_inode(body["before"])
-            case _:
-                raise Exception(f"Unknown routing key: {method_frame.routing_key}")
-
-        channel.basic_ack(delivery_tag=method_frame.delivery_tag)
-    except Exception as e:
-        logging.error("Could not process message", exc_info=e)
-        channel.basic_nack(delivery_tag=method_frame.delivery_tag, requeue=False)
-
-
-def on_channel_open(channel):
-    channel.basic_consume(env.get("QUEUE"), on_message)
-
-
-def on_open(connection):
-    connection.channel(on_open_callback=on_channel_open)
-
-
-def on_close(connection, exception):
-    connection.ioloop.stop()
 
 
 @click.group()
@@ -118,8 +75,12 @@ def rebuild_index():
         stmt = select(Inodes.id)
         inodes = session.scalars(stmt).all()
 
-        for inode_id in inodes:
-            worker.index_inode(inode_id)
+        # Use asyncio to run the indexing
+        async def index_all():
+            for inode_id in inodes:
+                await worker.index_inode(inode_id)
+
+        asyncio.run(index_all())
 
 
 @cli.command()
@@ -128,29 +89,20 @@ def process_messages():
     # This is here so we can just clear the dev environment and everything will still work
     opensearch_service.configure_index()
 
-    ssl_options = None
-    if env.get("RABBITMQ_SSL", "").lower() == "true":
-        context = ssl.create_default_context()
-        ssl_options = SSLOptions(context)
+    async def main():
+        # Setup RabbitMQ connection and start consuming messages
+        queue = await worker.setup_rabbitmq()
 
-    parameters = ConnectionParameters(
-        ssl_options=ssl_options,
-        host=env.get("RABBITMQ_HOST"),
-        credentials=PlainCredentials(
-            env.get("RABBITMQ_USER"), env.get("RABBITMQ_PASSWORD")
-        ),
-    )
+        # Start consuming messages
+        await queue.consume(worker.process_message)
 
-    connection = SelectConnection(
-        parameters=parameters,
-        on_open_callback=on_open,
-        on_close_callback=on_close,
-    )
-    try:
-        connection.ioloop.start()
-    except SystemExit:
-        # Gracefully close the connection
-        connection.close()
-        # Loop until we're fully closed.
-        # The on_close callback is required to stop the io loop
-        connection.ioloop.start()
+        # Keep the connection open
+        try:
+            # This will keep the event loop running
+            await asyncio.Future()
+        except (KeyboardInterrupt, SystemExit):
+            # Close the connection on exit
+            await worker.connection.close()
+
+    # Run the async main function
+    asyncio.run(main())
